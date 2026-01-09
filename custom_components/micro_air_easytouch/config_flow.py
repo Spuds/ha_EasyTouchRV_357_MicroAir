@@ -2,19 +2,23 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 import voluptuous as vol
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
+    async_ble_device_from_address,
 )
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_PASSWORD, CONF_USERNAME
 
-from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData  # Corrected import
+from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for MicroAirEasyTouch."""
@@ -26,6 +30,7 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_device: MicroAirEasyTouchBluetoothDeviceData | None = None
         self._discovered_devices: dict[str, str] = {}
+        self._available_zones: list[int] = [0]
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
@@ -43,15 +48,35 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_password(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle password and email entry."""
+        """Handle password and email entry, detect zones."""
         errors = {}
         if user_input is not None:
             try:
                 assert self._discovered_device is not None
+                assert self._discovery_info is not None
+                
                 self._discovered_device._email = user_input[CONF_USERNAME]
                 self._discovered_device._password = user_input[CONF_PASSWORD]
+                
+                # Detect available zones before confirming
+                ble_device = async_ble_device_from_address(self.hass, self._discovery_info.address)
+                if ble_device:
+                    try:
+                        available_zones = await self._discovered_device.get_available_zones(self.hass, ble_device)
+                        _LOGGER.info("Detected zones for %s: %s", self._discovery_info.address, available_zones)
+                        # Clean up connection after zone probing
+                        await self._discovered_device.async_shutdown()
+                    except Exception as e:
+                        _LOGGER.warning("Failed to detect zones: %s, using [0]", str(e))
+                        available_zones = [0]
+                else:
+                    _LOGGER.warning("Could not find BLE device for zone detection, using [0]")
+                    available_zones = [0]
+                
+                self._available_zones = available_zones
                 return await self.async_step_bluetooth_confirm(user_input)
-            except Exception:
+            except Exception as e:
+                _LOGGER.error("Authentication error: %s", str(e))
                 errors["base"] = "invalid_auth"
 
         return self.async_show_form(
@@ -79,6 +104,7 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_USERNAME: self._discovered_device._email,
                     CONF_PASSWORD: self._discovered_device._password,
                     CONF_ADDRESS: discovery_info.address,
+                    "available_zones": self._available_zones,
                 }
             )
 
