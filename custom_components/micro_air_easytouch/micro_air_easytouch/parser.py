@@ -77,8 +77,15 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._password = password
         self._email = email
         self._client = None
+        self._ble_device = None
         self._max_delay = 6.0
         self._notification_task = None
+        
+        # Synchronization primitives for multi-zone safety
+        self._client_lock = asyncio.Lock()      # Prevents concurrent connection modifications
+        self._command_queue = asyncio.Queue()   # FIFO command execution
+        self._queue_worker_task = None          # Manages queue processing
+        self._connected = False                 # Tracks persistent connection state
 
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
@@ -110,6 +117,93 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             if current['failures'] == 0 and current['delay'] < 0.1:
                 current['delay'] = 0.0
                 _LOGGER.debug("Reset delay for %s:%s to 0.0s", address, operation)
+
+    async def ensure_queue_worker(self, hass) -> None:
+        """Ensure command queue worker is running."""
+        if self._queue_worker_task is None or self._queue_worker_task.done():
+            self._queue_worker_task = asyncio.create_task(
+                self._process_command_queue(hass)
+            )
+
+    async def _process_command_queue(self, hass) -> None:
+        """Process commands from queue in FIFO order."""
+        _LOGGER.info("Command queue worker started")
+        try:
+            while True:
+                # Get next command from queue
+                command_item = await self._command_queue.get()
+                try:
+                    command, ble_device, future = command_item
+                    _LOGGER.debug("Processing queued command: %s", command.get("Type"))
+                    
+                    # Execute command with lock to ensure single access
+                    async with self._client_lock:
+                        result = await self._send_command_internal(hass, ble_device, command)
+                    
+                    future.set_result(result)
+                except Exception as e:
+                    _LOGGER.error("Error processing queued command: %s", str(e))
+                    future.set_exception(e)
+                finally:
+                    self._command_queue.task_done()
+        except asyncio.CancelledError:
+            _LOGGER.info("Command queue worker cancelled")
+
+    async def _ensure_connected(self, hass, ble_device: BLEDevice) -> bool:
+        """Ensure persistent connection to device, create once and reuse."""
+        if self._client and self._client.is_connected:
+            _LOGGER.debug("Already connected to device")
+            return True
+        
+        try:
+            _LOGGER.info("Establishing persistent connection to %s", ble_device.address)
+            self._ble_device = ble_device
+            
+            connect_delay = self._get_operation_delay(hass, ble_device.address, 'connect')
+            if connect_delay > 0:
+                await asyncio.sleep(connect_delay)
+            
+            self._client = await self._connect_to_device(ble_device)
+            
+            if not self._client or not self._client.is_connected:
+                self._increase_operation_delay(hass, ble_device.address, 'connect')
+                return False
+            
+            # Authenticate once
+            auth_delay = self._get_operation_delay(hass, ble_device.address, 'auth')
+            if auth_delay > 0:
+                await asyncio.sleep(auth_delay)
+            
+            auth_result = await self.authenticate(self._password)
+            if auth_result:
+                self._adjust_operation_delay(hass, ble_device.address, 'connect')
+                self._adjust_operation_delay(hass, ble_device.address, 'auth')
+                self._connected = True
+                _LOGGER.info("Persistent connection established and authenticated")
+                return True
+            else:
+                self._increase_operation_delay(hass, ble_device.address, 'auth')
+                if self._client:
+                    await self._client.disconnect()
+                self._client = None
+                return False
+                
+        except Exception as e:
+            _LOGGER.error("Failed to establish persistent connection: %s", str(e))
+            self._increase_operation_delay(hass, ble_device.address, 'connect')
+            return False
+
+    async def _disconnect_persistent(self) -> None:
+        """Gracefully disconnect persistent connection."""
+        if self._client and self._client.is_connected:
+            try:
+                _LOGGER.debug("Disconnecting persistent connection")
+                await self._client.disconnect()
+            except Exception as e:
+                _LOGGER.debug("Error disconnecting: %s", str(e))
+            finally:
+                self._client = None
+                self._connected = False
 
     def _start_update(self, service_info: BluetoothServiceInfo) -> None:
         """Update from BLE advertisement data."""
@@ -274,13 +368,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return False
 
     async def _write_gatt_with_retry(self, hass, uuid: str, data: bytes, ble_device: BLEDevice, retries: int = 3) -> bool:
-        """Write GATT characteristic with retry and adaptive delay."""
+        """Write GATT characteristic with retry (lock held by caller)."""
         last_error = None
         for attempt in range(retries):
             try:
                 if not self._client or not self._client.is_connected:
-                    if not await self._reconnect_and_authenticate(hass, ble_device):
-                        return False
+                    _LOGGER.error("Not connected for GATT write")
+                    return False
                 write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
                 if write_delay > 0:
                     await asyncio.sleep(write_delay)
@@ -296,39 +390,14 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         _LOGGER.error("GATT write failed after %d attempts: %s", retries, str(last_error))
         return False
 
-    async def _reconnect_and_authenticate(self, hass, ble_device: BLEDevice) -> bool:
-        """Reconnect and re-authenticate with adaptive delays."""
-        try:
-            connect_delay = self._get_operation_delay(hass, ble_device.address, 'connect')
-            if connect_delay > 0:
-                await asyncio.sleep(connect_delay)
-            self._client = await self._connect_to_device(ble_device)
-            if not self._client or not self._client.is_connected:
-                self._increase_operation_delay(hass, ble_device.address, 'connect')
-                return False
-            self._adjust_operation_delay(hass, ble_device.address, 'connect')
-            auth_delay = self._get_operation_delay(hass, ble_device.address, 'auth')
-            if auth_delay > 0:
-                await asyncio.sleep(auth_delay)
-            auth_result = await self.authenticate(self._password)
-            if auth_result:
-                self._adjust_operation_delay(hass, ble_device.address, 'auth')
-            else:
-                self._increase_operation_delay(hass, ble_device.address, 'auth')
-            return auth_result
-        except Exception as e:
-            _LOGGER.error("Reconnection failed: %s", str(e))
-            self._increase_operation_delay(hass, ble_device.address, 'connect')
-            return False
-
     async def _read_gatt_with_retry(self, hass, characteristic, ble_device: BLEDevice, retries: int = 3) -> bytes | None:
-        """Read GATT characteristic with retry and operation-specific delay."""
+        """Read GATT characteristic with retry (lock held by caller)."""
         last_error = None
         for attempt in range(retries):
             try:
                 if not self._client or not self._client.is_connected:
-                    if not await self._reconnect_and_authenticate(hass, ble_device):
-                        return None
+                    _LOGGER.error("Not connected for GATT read")
+                    return None
                 read_delay = self._get_operation_delay(hass, ble_device.address, 'read')
                 if read_delay > 0:
                     await asyncio.sleep(read_delay)
@@ -401,23 +470,55 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return [0]  # Default to zone 0 if detection fails
             
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Send command to device."""
+        """Send command to device using queue for serialization."""
         try:
-            if not self._client or not self._client.is_connected:
-                self._client = await self._connect_to_device(ble_device)
-                if not self._client or not self._client.is_connected:
-                    return False
-                if not await self.authenticate(self._password):
-                    return False
+            # Ensure queue worker is running
+            await self.ensure_queue_worker(hass)
+            
+            # Create future for this command
+            future: asyncio.Future = asyncio.Future()
+            
+            # Queue command (Type, BLEDevice, Future)
+            await self._command_queue.put((command, ble_device, future))
+            
+            # Wait for result with timeout
+            result = await asyncio.wait_for(future, timeout=10.0)
+            return result
+            
+        except asyncio.TimeoutError:
+            _LOGGER.error("Command execution timeout")
+            return False
+        except Exception as e:
+            _LOGGER.error("Error queuing command: %s", str(e))
+            return False
+
+    async def _send_command_internal(self, hass, ble_device: BLEDevice, command: dict) -> bool:
+        """Internal command execution with lock held by caller."""
+        try:
+            # Ensure connected
+            if not await self._ensure_connected(hass, ble_device):
+                return False
+            
+            # Send command
             command_bytes = json.dumps(command).encode()
             return await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
+            
         except Exception as e:
-            _LOGGER.error("Error sending command: %s", str(e))
+            _LOGGER.error("Error sending internal command: %s", str(e))
             return False
-        finally:
+
+    async def async_shutdown(self) -> None:
+        """Clean up resources on shutdown."""
+        _LOGGER.info("Shutting down device communication")
+        
+        # Cancel queue worker task
+        if self._queue_worker_task:
+            self._queue_worker_task.cancel()
             try:
-                if self._client and self._client.is_connected:
-                    await self._client.disconnect()
-            except Exception as e:
-                _LOGGER.debug("Error disconnecting: %s", str(e))
-            self._client = None
+                await self._queue_worker_task
+            except asyncio.CancelledError:
+                pass
+            self._queue_worker_task = None
+        
+        # Close persistent connection
+        await self._disconnect_persistent()
