@@ -20,7 +20,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.bluetooth import async_ble_device_from_address
 
 from .const import DOMAIN
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
@@ -44,31 +43,16 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]["data"]
     mac_address = config_entry.unique_id
     
-    # Get BLE device to probe for available zones
-    ble_device = async_ble_device_from_address(hass, mac_address)
-    if not ble_device:
-        _LOGGER.error("Could not find BLE device to detect zones: %s", mac_address)
-        # Fall back to single zone if device not found
-        entity = MicroAirEasyTouchClimate(data, mac_address, 0)
-        async_add_entities([entity])
-        return
+    # Get zones from config entry data (detected during config flow)
+    available_zones = config_entry.data.get("available_zones", [0])
     
-    # Probe device for available zones
-    try:
-        available_zones = await data.get_available_zones(hass, ble_device)
-        _LOGGER.info("Detected zones for device %s: %s", mac_address, available_zones)
-        
-        entities = []
-        for zone in available_zones:
-            entity = MicroAirEasyTouchClimate(data, mac_address, zone)
-            entities.append(entity)
-        
-        async_add_entities(entities)
-    except Exception as e:
-        _LOGGER.error("Failed to detect zones for device %s: %s", mac_address, str(e))
-        # Fall back to single zone if detection fails
-        entity = MicroAirEasyTouchClimate(data, mac_address, 0)
-        async_add_entities([entity])
+    _LOGGER.info("Setting up climate entities for zones: %s", available_zones)
+    entities = []
+    for zone in available_zones:
+        entity = MicroAirEasyTouchClimate(data, mac_address, zone)
+        entities.append(entity)
+    
+    async_add_entities(entities)
 
 class MicroAirEasyTouchClimate(ClimateEntity):
     """Representation of MicroAirEasyTouch Climate."""
@@ -81,7 +65,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     )
     _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_hvac_modes = list(HA_MODE_TO_EASY_MODE.keys())
-    _attr_should_poll = True
+    _attr_should_poll = False
 
     # Map our modes to Home Assistant fan icons
     _FAN_MODE_ICONS = {
@@ -360,7 +344,28 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             message = {"Type": "Change", "Changes": changes}
             await self._data.send_command(self.hass, ble_device, message)
 
-    async def async_update(self) -> None:
-        """Update the entity state manually if needed."""
-        _LOGGER.debug("Updating state for zone %s", self._zone)
-        await self._async_fetch_initial_state()
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to device data updates."""
+        _LOGGER.debug("Zone %s added to Home Assistant", self._zone)
+        self.async_on_remove(
+            self._data.async_subscribe_updates(
+                self._handle_device_update
+            )
+        )
+
+    @callback
+    def _handle_device_update(self) -> None:
+        """Handle device data update."""
+        self.async_write_ha_state()
+
+    async def _async_fetch_initial_state(self) -> None:
+        """Fetch initial state from device on startup."""
+        _LOGGER.debug("Fetching initial state for zone %s", self._zone)
+        try:
+            state_data = self._data.async_get_device_data()
+            if state_data and self._zone in state_data.get('zones', {}):
+                self._state = state_data['zones'][self._zone]
+            else:
+                _LOGGER.warning("No initial state data for zone %s", self._zone)
+        except Exception as e:
+            _LOGGER.error("Error fetching initial state for zone %s: %s", self._zone, str(e))
