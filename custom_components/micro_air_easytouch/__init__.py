@@ -47,7 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
+        # Clean up device data
+        device_data = hass.data[DOMAIN].pop(entry.entry_id, {}).get("data")
+        if device_data:
+            await device_data.async_shutdown()
         # Unregister services
         await async_unregister_services(hass)
     return unload_ok
