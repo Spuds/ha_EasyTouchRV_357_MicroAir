@@ -7,7 +7,7 @@ import json
 
 # Bluetooth-related imports for device communication
 from bleak import BLEDevice
-from bleak.exc import BleakError, BleakDBusError
+from bleak.exc import BleakError
 from bleak_retry_connector import (
     BleakClientWithServiceCache,
     establish_connection,
@@ -17,7 +17,6 @@ from bleak_retry_connector import (
 from bluetooth_data_tools import short_address
 from bluetooth_sensor_state_data import BluetoothData
 from home_assistant_bluetooth import BluetoothServiceInfo
-from sensor_state_data import SensorDeviceClass, SensorUpdate, Units
 from sensor_state_data.enum import StrEnum
 
 from ..const import DOMAIN
