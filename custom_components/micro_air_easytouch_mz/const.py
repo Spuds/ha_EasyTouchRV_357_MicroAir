@@ -1,3 +1,3 @@
 """Constants for MicroAirEasyTouch"""
 
-DOMAIN = "micro_air_easytouch"
+DOMAIN = "micro_air_easytouch_mz"

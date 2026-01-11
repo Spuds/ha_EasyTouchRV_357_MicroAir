@@ -17,6 +17,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -345,7 +346,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             await self._data.send_command(self.hass, ble_device, message)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to device data updates."""
+        """Subscribe to device data updates and fetch initial state."""
         _LOGGER.debug("Zone %s added to Home Assistant", self._zone)
         self.async_on_remove(
             self._data.async_subscribe_updates(
@@ -353,19 +354,13 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             )
         )
 
+        # Fetch initial state in background so setup isn't blocked
+        try:
+            self.hass.async_create_task(self._async_fetch_initial_state())
+        except Exception as e:
+            _LOGGER.debug("Failed to schedule initial state fetch for zone %s: %s", self._zone, str(e))
+
     @callback
     def _handle_device_update(self) -> None:
         """Handle device data update."""
         self.async_write_ha_state()
-
-    async def _async_fetch_initial_state(self) -> None:
-        """Fetch initial state from device on startup."""
-        _LOGGER.debug("Fetching initial state for zone %s", self._zone)
-        try:
-            state_data = self._data.async_get_device_data()
-            if state_data and self._zone in state_data.get('zones', {}):
-                self._state = state_data['zones'][self._zone]
-            else:
-                _LOGGER.warning("No initial state data for zone %s", self._zone)
-        except Exception as e:
-            _LOGGER.error("Error fetching initial state for zone %s: %s", self._zone, str(e))

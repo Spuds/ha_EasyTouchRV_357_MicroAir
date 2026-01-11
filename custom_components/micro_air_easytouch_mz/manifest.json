@@ -1,0 +1,23 @@
+{
+    "domain": "micro_air_easytouch_mz",
+    "name": "Micro-Air EasyTouch Thermostat",
+    "bluetooth": [
+        {
+            "local_name": "EasyTouch*",
+            "connectable": true
+        }
+    ],
+    "codeowners": [
+        "@Spuds"
+    ],
+    "config_flow": true,
+    "dependencies": [
+        "bluetooth_adapters"
+    ],
+    "documentation": "https://github.com/Spuds/ha_EasyTouchRV_MicroAir_MZ",
+    "integration_type": "device",
+    "iot_class": "local_push",
+    "issue_tracker": "https://github.com/Spuds/ha_EasyTouchRV_MicroAir_MZ/issues",
+    "requirements": [],
+    "version": "1.0.0"
+}

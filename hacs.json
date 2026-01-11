@@ -1,5 +1,7 @@
 {
-    "name": "Micro-Air EasyTouch Thermostat",
+    "name": "Micro-Air EasyTouch Thermostat MZ",
     "render_readme": true,
-    "homeassistant": "2024.10.1"
+    "domains": ["button", "climate"],
+    "homeassistant": "2024.10.1",
+    "iot_class": "local_push"
 }

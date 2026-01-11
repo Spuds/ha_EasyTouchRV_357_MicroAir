@@ -234,7 +234,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
         hr_status['ALL'] = status
-        
+
         # Detect available zones and process each one
         available_zones = []
         zone_data = {}
@@ -468,7 +468,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         except Exception as e:
             _LOGGER.error("Failed to get available zones: %s", str(e))
             return [0]  # Default to zone 0 if detection fails
-            
+
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
         """Send command to device using queue for serialization."""
         try:

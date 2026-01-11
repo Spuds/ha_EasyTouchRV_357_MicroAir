@@ -3,11 +3,11 @@
 [![hacs](https://img.shields.io/badge/HACS-default-orange.svg?style=flat-square)](https://hacs.xyz)
 
 # ha-micro-air-easytouch
-Home Assistant Integration for the Micro-Air EasyTouch 357 RV Thermostat
+Home Assistant Integration for the Mutli-Zone Micro-Air EasyTouch RV Thermostat
 
 This integration implements a Home Assistant climate entity for basic control of your Micro-Air EasyTouch RV thermostat. 
 
-It is a fork of the original [micro-air-easytouch](https://github.com/k3vmcd/micro-air-easytouch) integration by [k3vmcd](https://github.com/k3vmcd). This fork is an experimental update to the multizone branch and will only be tested against the 357 model thermostats.
+It is a fork of the original [micro-air-easytouch](https://github.com/k3vmcd/micro-air-easytouch) integration by [k3vmcd](https://github.com/k3vmcd). This fork is an **experimental** update to the multizone branch and will only be tested against the 357 model thermostat.  **Do not use** this its only a test branch to determine what may work.
 
 Core Features:
 - Bluetooth connectivity
