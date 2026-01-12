@@ -1,10 +1,10 @@
 # Standard library imports for basic functionality
 from __future__ import annotations
+from functools import wraps
 import logging
 import asyncio
 import time
 import json
-from typing import Callable
 
 # Bluetooth-related imports for device communication
 from bleak import BLEDevice
@@ -24,8 +24,6 @@ from ..const import DOMAIN
 from .const import UUIDS
 
 _LOGGER = logging.getLogger(__name__)
-
-from functools import wraps
 def retry_authentication(retries=3, delay=1):
     """Custom retry decorator for authentication attempts."""
     def decorator(func):
@@ -80,16 +78,27 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._ble_device = None
         self._max_delay = 6.0
         self._notification_task = None
-        
+
+        # Latest parsed device state (populated by `decrypt`)
+        self._device_state: dict = {}
+
+        # Subscribers to device update events. Each subscriber is a callable
+        # that takes no arguments and is invoked when device state changes.
+        self._update_listeners: list[callable] = []
+
         # Synchronization primitives for multi-zone safety
         self._client_lock = asyncio.Lock()      # Prevents concurrent connection modifications
         self._command_queue = asyncio.Queue()   # FIFO command execution
         self._queue_worker_task = None          # Manages queue processing
         self._connected = False                 # Tracks persistent connection state
-        
-        # Update subscriptions for callback-based updates
-        self._update_callbacks: list[Callable[[], None]] = []
-        self._device_data: dict = {}  # Cache current device state
+
+        # Polling configuration and runtime state
+        # Polling is enabled by default because device does not advertise full state
+        self._polling_enabled: bool = True
+        self._poll_interval: float = 30.0  # seconds
+        self._poll_task: asyncio.Task | None = None
+        self._last_poll_success: bool = False
+        self._last_poll_time: float | None = None
 
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
@@ -122,127 +131,44 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 current['delay'] = 0.0
                 _LOGGER.debug("Reset delay for %s:%s to 0.0s", address, operation)
 
-    async def ensure_queue_worker(self, hass) -> None:
-        """Ensure command queue worker is running."""
-        if self._queue_worker_task is None or self._queue_worker_task.done():
-            self._queue_worker_task = asyncio.create_task(
-                self._process_command_queue(hass)
-            )
-
-    async def _process_command_queue(self, hass) -> None:
-        """Process commands from queue in FIFO order."""
-        _LOGGER.info("Command queue worker started")
-        try:
-            while True:
-                # Get next command from queue
-                command_item = await self._command_queue.get()
-                try:
-                    command, ble_device, future = command_item
-                    _LOGGER.debug("Processing queued command: %s", command.get("Type"))
-                    
-                    # Execute command with lock to ensure single access
-                    async with self._client_lock:
-                        result = await self._send_command_internal(hass, ble_device, command)
-                    
-                    future.set_result(result)
-                except Exception as e:
-                    _LOGGER.error("Error processing queued command: %s", str(e))
-                    future.set_exception(e)
-                finally:
-                    self._command_queue.task_done()
-        except asyncio.CancelledError:
-            _LOGGER.info("Command queue worker cancelled")
-
-    async def _ensure_connected(self, hass, ble_device: BLEDevice) -> bool:
-        """Ensure persistent connection to device, create once and reuse."""
-        if self._client and self._client.is_connected:
-            _LOGGER.debug("Already connected to device")
-            return True
-        
-        try:
-            _LOGGER.info("Establishing persistent connection to %s", ble_device.address)
-            self._ble_device = ble_device
-            
-            connect_delay = self._get_operation_delay(hass, ble_device.address, 'connect')
-            if connect_delay > 0:
-                await asyncio.sleep(connect_delay)
-            
-            self._client = await self._connect_to_device(ble_device)
-            
-            if not self._client or not self._client.is_connected:
-                self._increase_operation_delay(hass, ble_device.address, 'connect')
-                return False
-            
-            # Authenticate once
-            auth_delay = self._get_operation_delay(hass, ble_device.address, 'auth')
-            if auth_delay > 0:
-                await asyncio.sleep(auth_delay)
-            
-            auth_result = await self.authenticate(self._password)
-            if auth_result:
-                self._adjust_operation_delay(hass, ble_device.address, 'connect')
-                self._adjust_operation_delay(hass, ble_device.address, 'auth')
-                self._connected = True
-                _LOGGER.info("Persistent connection established and authenticated")
-                return True
-            else:
-                self._increase_operation_delay(hass, ble_device.address, 'auth')
-                if self._client:
-                    await self._client.disconnect()
-                self._client = None
-                return False
-                
-        except Exception as e:
-            _LOGGER.error("Failed to establish persistent connection: %s", str(e))
-            self._increase_operation_delay(hass, ble_device.address, 'connect')
-            return False
-
-    async def _disconnect_persistent(self) -> None:
-        """Gracefully disconnect persistent connection."""
-        if self._client and self._client.is_connected:
-            try:
-                _LOGGER.debug("Disconnecting persistent connection")
-                await self._client.disconnect()
-            except Exception as e:
-                _LOGGER.debug("Error disconnecting: %s", str(e))
-            finally:
-                self._client = None
-                self._connected = False
-
-    def async_subscribe_updates(self, callback: Callable[[], None]) -> Callable[[], None]:
-        """Subscribe to device data updates."""
-        self._update_callbacks.append(callback)
-        _LOGGER.debug("Entity subscribed to device updates (%d total)", len(self._update_callbacks))
-        
-        # Return unsubscribe function
-        def unsubscribe() -> None:
-            if callback in self._update_callbacks:
-                self._update_callbacks.remove(callback)
-                _LOGGER.debug("Entity unsubscribed from device updates (%d remaining)", len(self._update_callbacks))
-        
-        return unsubscribe
-
-    def async_get_device_data(self) -> dict:
-        """Get current cached device data."""
-        return self._device_data.copy()
-
-    def _notify_updates(self) -> None:
-        """Notify all subscribed callbacks of device update."""
-        _LOGGER.debug("Notifying %d callbacks of device update", len(self._update_callbacks))
-        for callback in self._update_callbacks:
-            try:
-                callback()
-            except Exception as e:
-                _LOGGER.error("Error in update callback: %s", str(e))
-
     def _start_update(self, service_info: BluetoothServiceInfo) -> None:
-        """Update from BLE advertisement data."""
+        """Update from BLE advertisement data and notify listeners."""
         _LOGGER.debug("Parsing MicroAirEasyTouch BLE advertisement data: %s", service_info)
         self.set_device_manufacturer("MicroAirEasyTouch")
         self.set_device_type("Thermostat")
         name = f"{service_info.name} {short_address(service_info.address)}"
         self.set_device_name(name)
         self.set_title(name)
+
+        # Notify any subscribers that new data is available (advertisement-driven)
+        self._notify_update()
+
+    def async_subscribe_updates(self, callback: callable) -> callable:
+        """Subscribe to device update notifications.
+
+        Returns an unsubscribe callable that removes the callback when invoked.
+        """
+        self._update_listeners.append(callback)
+
+        def _unsubscribe() -> None:
+            try:
+                self._update_listeners.remove(callback)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    def _notify_update(self) -> None:
+        """Invoke all registered update listeners and handle errors."""
+        for callback in list(self._update_listeners):
+            try:
+                callback()
+            except Exception as e:
+                _LOGGER.debug("Error in update listener: %s", str(e))
+
+    def async_get_device_data(self) -> dict:
+        """Return the last parsed device state."""
+        return self._device_state
 
     def decrypt(self, data: bytes) -> dict:
         """Parse and decode the device status data."""
@@ -264,7 +190,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
         hr_status['ALL'] = status
-
+        
         # Detect available zones and process each one
         available_zones = []
         zone_data = {}
@@ -346,10 +272,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         if 0 in zone_data:
             hr_status.update(zone_data[0])
 
-        # Cache the device data and notify subscribers
-        self._device_data = hr_status.copy()
-        self._notify_updates()
-        
+        # Update internal device state and notify subscribers
+        try:
+            self._device_state = hr_status
+            self._notify_update()
+        except Exception:
+            _LOGGER.debug("Failed to notify subscribers of decrypted state")
+
         return hr_status
 
     @retry_bluetooth_connection_error(attempts=7)
@@ -402,13 +331,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return False
 
     async def _write_gatt_with_retry(self, hass, uuid: str, data: bytes, ble_device: BLEDevice, retries: int = 3) -> bool:
-        """Write GATT characteristic with retry (lock held by caller)."""
+        """Write GATT characteristic with retry and adaptive delay."""
         last_error = None
         for attempt in range(retries):
             try:
                 if not self._client or not self._client.is_connected:
-                    _LOGGER.error("Not connected for GATT write")
-                    return False
+                    if not await self._reconnect_and_authenticate(hass, ble_device):
+                        return False
                 write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
                 if write_delay > 0:
                     await asyncio.sleep(write_delay)
@@ -424,14 +353,39 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         _LOGGER.error("GATT write failed after %d attempts: %s", retries, str(last_error))
         return False
 
+    async def _reconnect_and_authenticate(self, hass, ble_device: BLEDevice) -> bool:
+        """Reconnect and re-authenticate with adaptive delays."""
+        try:
+            connect_delay = self._get_operation_delay(hass, ble_device.address, 'connect')
+            if connect_delay > 0:
+                await asyncio.sleep(connect_delay)
+            self._client = await self._connect_to_device(ble_device)
+            if not self._client or not self._client.is_connected:
+                self._increase_operation_delay(hass, ble_device.address, 'connect')
+                return False
+            self._adjust_operation_delay(hass, ble_device.address, 'connect')
+            auth_delay = self._get_operation_delay(hass, ble_device.address, 'auth')
+            if auth_delay > 0:
+                await asyncio.sleep(auth_delay)
+            auth_result = await self.authenticate(self._password)
+            if auth_result:
+                self._adjust_operation_delay(hass, ble_device.address, 'auth')
+            else:
+                self._increase_operation_delay(hass, ble_device.address, 'auth')
+            return auth_result
+        except Exception as e:
+            _LOGGER.error("Reconnection failed: %s", str(e))
+            self._increase_operation_delay(hass, ble_device.address, 'connect')
+            return False
+
     async def _read_gatt_with_retry(self, hass, characteristic, ble_device: BLEDevice, retries: int = 3) -> bytes | None:
-        """Read GATT characteristic with retry (lock held by caller)."""
+        """Read GATT characteristic with retry and operation-specific delay."""
         last_error = None
         for attempt in range(retries):
             try:
                 if not self._client or not self._client.is_connected:
-                    _LOGGER.error("Not connected for GATT read")
-                    return None
+                    if not await self._reconnect_and_authenticate(hass, ble_device):
+                        return None
                 read_delay = self._get_operation_delay(hass, ble_device.address, 'read')
                 if read_delay > 0:
                     await asyncio.sleep(read_delay)
@@ -487,72 +441,155 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             self._ble_device = None
 
     async def get_available_zones(self, hass, ble_device: BLEDevice) -> list[int]:
-        """Get available zones from the device by querying its status."""
+        """Get available zones by performing a short-lived GATT probe.
+
+        Use a dedicated short-lived connection for probing to avoid contention
+        with any persistent connection or ongoing commands. This matches the
+        original behavior and keeps zone detection fast and reliable.
+        """
+        if ble_device is None:
+            ble_device = self._ble_device
+            if ble_device is None:
+                _LOGGER.warning("No BLE device available to detect zones; defaulting to [0]")
+                return [0]
+
+        _LOGGER.debug("Probing device %s for available zones (short-lived connection)", ble_device.address)
+
+        client = None
         try:
-            message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-            if await self.send_command(hass, ble_device, message):
-                json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
-                if json_payload:
-                    decrypted_data = self.decrypt(json_payload.decode('utf-8'))
-                    zones = decrypted_data.get('available_zones', [0])
-                    _LOGGER.info("Detected %d zones: %s", len(zones), zones)
+            client = await establish_connection(BleakClientWithServiceCache, ble_device, ble_device.address, timeout=10.0)
+            if not client or not client.is_connected:
+                _LOGGER.warning("Short-lived probe failed to connect to %s", ble_device.address)
+                return [0]
+
+            # Perform minimal authentication if credentials are available
+            if self._password:
+                try:
+                    password_bytes = self._password.encode('utf-8')
+                    await client.write_gatt_char(UUIDS["passwordCmd"], password_bytes, response=True)
+                    _LOGGER.debug("Probe authentication sent")
+                except Exception as e:
+                    _LOGGER.debug("Probe authentication failed: %s", str(e))
+
+            # Send status request and read response
+            try:
+                cmd = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                await client.write_gatt_char(UUIDS["jsonCmd"], json.dumps(cmd).encode('utf-8'), response=True)
+                await asyncio.sleep(0.2)
+                payload = await client.read_gatt_char(UUIDS["jsonReturn"])
+                if payload:
+                    try:
+                        payload_str = payload.decode('utf-8')
+                    except Exception:
+                        payload_str = repr(payload)
+                    _LOGGER.debug("Probe raw payload: %s", payload_str)
+                    decrypted = self.decrypt(payload_str)
+                    zones = decrypted.get('available_zones', [0])
+                    _LOGGER.info("Probe detected %d zones: %s", len(zones), zones)
                     return zones
-            _LOGGER.warning("Failed to get zone status from device, defaulting to zone 0")
-            return [0]  # Default to zone 0 if detection fails
+            except Exception as e:
+                _LOGGER.debug("Probe read failed: %s", str(e))
+                return [0]
         except Exception as e:
-            _LOGGER.error("Failed to get available zones: %s", str(e))
-            return [0]  # Default to zone 0 if detection fails
+            _LOGGER.debug("Probe connection failed for %s: %s", ble_device.address, str(e))
+            return [0]
+        finally:
+            try:
+                if client and client.is_connected:
+                    await client.disconnect()
+            except Exception:
+                pass
 
+        return [0]
+
+    def start_polling(self, hass, startup_delay: float = 1.0) -> None:
+        """Start background polling loop (non-blocking) with a configurable startup delay.
+
+        The tiny delay (default 1s) lets Home Assistant finish platform setup before we
+        start potentially slow GATT connect/read operations. Tests can pass a
+        `startup_delay=0` to run immediately.
+        """
+        if not self._polling_enabled:
+            _LOGGER.debug("Polling disabled for device")
+            return
+        if self._poll_task and not self._poll_task.done():
+            _LOGGER.debug("Polling already running")
+            return
+
+        async def _starter():
+            # Give the system a moment to finish setup to avoid blocking time-sensitive startup
+            if startup_delay and startup_delay > 0:
+                await asyncio.sleep(startup_delay)
+            await self._poll_loop(hass)
+
+        _LOGGER.info("Scheduling device poll loop (interval: %.1fs) to start after %.1fs delay", self._poll_interval, startup_delay)
+        self._poll_task = asyncio.create_task(_starter())
+
+    async def stop_polling(self) -> None:
+        """Stop the background polling task if running."""
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                _LOGGER.debug("Polling task cancelled cleanly")
+        self._poll_task = None
+
+    async def _poll_loop(self, hass) -> None:
+        """Continuously poll the device for full status and update internal state."""
+        _LOGGER.debug("Poll loop running")
+        try:
+            while True:
+                try:
+                    if not self._ble_device:
+                        _LOGGER.debug("No BLE device known, skipping poll iteration")
+                        self._last_poll_success = False
+                    else:
+                        message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                        sent = await self.send_command(hass, self._ble_device, message)
+                        if sent:
+                            json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
+                            if json_payload:
+                                try:
+                                    payload_str = json_payload.decode('utf-8')
+                                except Exception:
+                                    payload_str = repr(json_payload)
+                                _LOGGER.debug("Poll raw payload: %s", payload_str)
+                                self.decrypt(payload_str)
+                                self._last_poll_success = True
+                                self._last_poll_time = time.time()
+                            else:
+                                _LOGGER.debug("Poll read returned no payload")
+                                self._last_poll_success = False
+                        else:
+                            _LOGGER.debug("Poll send_command failed")
+                            self._last_poll_success = False
+                except Exception as e:
+                    _LOGGER.debug("Error during poll iteration: %s", str(e))
+                    self._last_poll_success = False
+                await asyncio.sleep(self._poll_interval)
+        except asyncio.CancelledError:
+            _LOGGER.info("Poll loop cancelled")
+            raise
+            
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Send command to device using queue for serialization."""
+        """Send command to device."""
         try:
-            # Ensure queue worker is running
-            await self.ensure_queue_worker(hass)
-            
-            # Create future for this command
-            future: asyncio.Future = asyncio.Future()
-            
-            # Queue command (Type, BLEDevice, Future)
-            await self._command_queue.put((command, ble_device, future))
-            
-            # Wait for result with timeout
-            result = await asyncio.wait_for(future, timeout=10.0)
-            return result
-            
-        except asyncio.TimeoutError:
-            _LOGGER.error("Command execution timeout")
-            return False
-        except Exception as e:
-            _LOGGER.error("Error queuing command: %s", str(e))
-            return False
-
-    async def _send_command_internal(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Internal command execution with lock held by caller."""
-        try:
-            # Ensure connected
-            if not await self._ensure_connected(hass, ble_device):
-                return False
-            
-            # Send command
+            if not self._client or not self._client.is_connected:
+                self._client = await self._connect_to_device(ble_device)
+                if not self._client or not self._client.is_connected:
+                    return False
+                if not await self.authenticate(self._password):
+                    return False
             command_bytes = json.dumps(command).encode()
             return await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
-            
         except Exception as e:
-            _LOGGER.error("Error sending internal command: %s", str(e))
+            _LOGGER.error("Error sending command: %s", str(e))
             return False
-
-    async def async_shutdown(self) -> None:
-        """Clean up resources on shutdown."""
-        _LOGGER.info("Shutting down device communication")
-        
-        # Cancel queue worker task
-        if self._queue_worker_task:
-            self._queue_worker_task.cancel()
+        finally:
             try:
-                await self._queue_worker_task
-            except asyncio.CancelledError:
-                pass
-            self._queue_worker_task = None
-        
-        # Close persistent connection
-        await self._disconnect_persistent()
+                if self._client and self._client.is_connected:
+                    await self._client.disconnect()
+            except Exception as e:
+                _LOGGER.debug("Error disconnecting: %s", str(e))
+            self._client = None

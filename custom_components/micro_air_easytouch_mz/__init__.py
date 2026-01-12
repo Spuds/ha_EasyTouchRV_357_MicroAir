@@ -6,7 +6,6 @@ from typing import Final
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
-    async_ble_device_from_address,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_PASSWORD, CONF_USERNAME
@@ -47,10 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        # Clean up device data
-        device_data = hass.data[DOMAIN].pop(entry.entry_id, {}).get("data")
-        if device_data:
-            await device_data.async_shutdown()
+        hass.data[DOMAIN].pop(entry.entry_id)
         # Unregister services
         await async_unregister_services(hass)
     return unload_ok
