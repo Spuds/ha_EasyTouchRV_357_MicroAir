@@ -4,6 +4,7 @@ import logging
 import asyncio
 import time
 import json
+from typing import Callable
 
 # Bluetooth-related imports for device communication
 from bleak import BLEDevice
@@ -85,6 +86,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._command_queue = asyncio.Queue()   # FIFO command execution
         self._queue_worker_task = None          # Manages queue processing
         self._connected = False                 # Tracks persistent connection state
+        
+        # Update subscriptions for callback-based updates
+        self._update_callbacks: list[Callable[[], None]] = []
+        self._device_data: dict = {}  # Cache current device state
 
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
@@ -204,6 +209,32 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 self._client = None
                 self._connected = False
 
+    def async_subscribe_updates(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to device data updates."""
+        self._update_callbacks.append(callback)
+        _LOGGER.debug("Entity subscribed to device updates (%d total)", len(self._update_callbacks))
+        
+        # Return unsubscribe function
+        def unsubscribe() -> None:
+            if callback in self._update_callbacks:
+                self._update_callbacks.remove(callback)
+                _LOGGER.debug("Entity unsubscribed from device updates (%d remaining)", len(self._update_callbacks))
+        
+        return unsubscribe
+
+    def async_get_device_data(self) -> dict:
+        """Get current cached device data."""
+        return self._device_data.copy()
+
+    def _notify_updates(self) -> None:
+        """Notify all subscribed callbacks of device update."""
+        _LOGGER.debug("Notifying %d callbacks of device update", len(self._update_callbacks))
+        for callback in self._update_callbacks:
+            try:
+                callback()
+            except Exception as e:
+                _LOGGER.error("Error in update callback: %s", str(e))
+
     def _start_update(self, service_info: BluetoothServiceInfo) -> None:
         """Update from BLE advertisement data."""
         _LOGGER.debug("Parsing MicroAirEasyTouch BLE advertisement data: %s", service_info)
@@ -315,6 +346,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         if 0 in zone_data:
             hr_status.update(zone_data[0])
 
+        # Cache the device data and notify subscribers
+        self._device_data = hr_status.copy()
+        self._notify_updates()
+        
         return hr_status
 
     @retry_bluetooth_connection_error(attempts=7)

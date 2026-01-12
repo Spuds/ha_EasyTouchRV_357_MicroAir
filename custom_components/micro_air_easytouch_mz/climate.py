@@ -1,6 +1,7 @@
 """Support for MicroAirEasyTouch climate control."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -141,42 +142,36 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         return self._FAN_MODE_ICONS.get(self.fan_mode, "mdi:fan")
 
     async def _async_fetch_initial_state(self) -> None:
-        """Fetch the initial state from the device."""
-        ble_device = async_ble_device_from_address(self.hass, self._mac_address)
-        if not ble_device:
-            _LOGGER.error("Could not find BLE device: %s", self._mac_address)
-            self._state = {}
-            return
-
-        message = {"Type": "Get Status", "Zone": self._zone, "EM": self._data._email, "TM": int(time.time())}
+        """Fetch the initial state from the device data cache."""
         try:
-            if await self._data.send_command(self.hass, ble_device, message):
-                json_payload = await self._data._read_gatt_with_retry(self.hass, UUIDS["jsonReturn"], ble_device)
-                if json_payload:
-                    full_data = self._data.decrypt(json_payload.decode('utf-8'))
-                    # Get zone-specific data
-                    if 'zones' in full_data and self._zone in full_data['zones']:
-                        self._state = full_data['zones'][self._zone]
-                    else:
-                        # Fall back to root level data if zones not available (backward compatibility)
-                        self._state = full_data
-                    _LOGGER.debug("Initial state fetched for zone %s: %s", self._zone, self._state)
-                    self.async_write_ha_state()
+            # Get cached device data from the device handler
+            full_data = self._data.async_get_device_data()
+            
+            if full_data and 'zones' in full_data:
+                if self._zone in full_data['zones']:
+                    self._state = full_data['zones'][self._zone]
+                    _LOGGER.debug("Initial state fetched for zone %s from cache", self._zone)
                 else:
-                    self._state = {}
-                    _LOGGER.warning("No payload received for initial state zone %s", self._zone)
+                    _LOGGER.debug("Zone %s not in cached data, will wait for update", self._zone)
+            elif full_data:
+                # Fall back to root level data if zones not available
+                self._state = full_data
+                _LOGGER.debug("Initial state fetched for zone %s from root data", self._zone)
             else:
-                self._state = {}
-                _LOGGER.warning("Failed to send command for initial state zone %s", self._zone)
+                # No cached data yet, request from device
+                _LOGGER.debug("No cached data for zone %s, requesting from device", self._zone)
+                ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+                if ble_device:
+                    message = {"Type": "Get Status", "Zone": self._zone, "EM": self._data._email, "TM": int(time.time())}
+                    if await self._data.send_command(self.hass, ble_device, message):
+                        # Data will be fetched and cached via decrypt, which triggers callbacks
+                        _LOGGER.debug("Status request sent for zone %s", self._zone)
+                        # Give decrypt callback a moment to fire
+                        await asyncio.sleep(0.1)
+            
+            self.async_write_ha_state()
         except Exception as e:
-            _LOGGER.error("Failed to fetch initial state for zone %s: %s", self._zone, str(e))
-            self._state = {}
-
-    @property
-    def current_temperature(self) -> float | None:
-        """Return the current temperature."""
-        return self._state.get("facePlateTemperature")
-
+            _LOGGER.error("Error fetching initial state for zone %s: %s", self._zone, str(e))
     @property
     def target_temperature(self) -> float | None:
         """Return the target temperature."""
