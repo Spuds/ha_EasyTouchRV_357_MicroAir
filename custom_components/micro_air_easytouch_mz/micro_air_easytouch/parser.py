@@ -79,11 +79,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._max_delay = 6.0
         self._notification_task = None
 
-        # Notification/persistent connection flag
-        self._notifications_enabled: bool = False
-        # Notification support: None=unknown, False=not supported, True=supported
-        self._notifications_supported: bool | None = None
-
         # Latest parsed device state (populated by `decrypt`)
         self._device_state: dict = {}
 
@@ -104,9 +99,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._poll_task: asyncio.Task | None = None
         self._last_poll_success: bool = False
         self._last_poll_time: float | None = None
-
-        # Quick poll (burst) task for accelerated probing when changes are suspected
-        self._quick_poll_task: asyncio.Task | None = None
 
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
@@ -178,52 +170,44 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         """Return the last parsed device state."""
         return self._device_state
 
-    def decrypt(self, data: bytes | str) -> dict:
-        """Parse and decode the device status data with change detection."""
+    def decrypt(self, data: bytes) -> dict:
+        """Parse and decode the device status data."""
         try:
-            # Accept both bytes and str inputs
-            if isinstance(data, (bytes, bytearray)):
-                data_text = data.decode('utf-8')
-            else:
-                data_text = str(data)
-            status = json.loads(data_text)
+            status = json.loads(data)
         except json.JSONDecodeError as e:
             _LOGGER.error("Failed to parse JSON data: %s", str(e))
             return {'available_zones': [0], 'zones': {0: {}}}
-        except Exception as e:
-            _LOGGER.error("Unexpected error parsing data: %s", str(e))
-            return {'available_zones': [0], 'zones': {0: {}}}
-
+            
         if 'Z_sts' not in status:
             _LOGGER.error("No zone status data found in device response")
             return {'available_zones': [0], 'zones': {0: {}}}
-
+            
         param = status.get('PRM', [])
         modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 11: "auto"}
         fan_modes_full = {0: "off", 1: "manualL", 2: "manualH", 65: "cycledL", 66: "cycledH", 128: "full auto"}
         fan_modes_fan_only = {0: "off", 1: "low", 2: "high"}
-
+        
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
         hr_status['ALL'] = status
-
+        
         # Detect available zones and process each one
         available_zones = []
         zone_data = {}
-
+        
         for zone_key in status['Z_sts'].keys():
             try:
                 zone_num = int(zone_key)
                 info = status['Z_sts'][zone_key]
-
+                
                 # Ensure info has enough elements
                 if len(info) < 16:
                     _LOGGER.warning("Zone %s has incomplete data (%d elements), skipping", zone_num, len(info))
                     continue
-
+                
                 # Only add to available_zones after validation passes
                 available_zones.append(zone_num)
-
+                
                 zone_status = {}
                 zone_status['autoHeat_sp'] = info[0]
                 zone_status['autoCool_sp'] = info[1]
@@ -251,7 +235,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
                 # Map fan modes based on current mode
                 current_mode = zone_status.get('mode', "off")
-
+                
                 # Store the raw fan mode numbers and their string representations
                 if current_mode == "fan":
                     fan_num = info[6]
@@ -277,34 +261,21 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         hr_status['zones'] = zone_data
         hr_status['available_zones'] = sorted(available_zones)
-
+        
         # Ensure we have at least one zone
         if not available_zones:
             _LOGGER.warning("No valid zones found, creating default zone 0")
             hr_status['available_zones'] = [0]
             hr_status['zones'] = {0: {}}
-
+        
         # For backward compatibility, if zone 0 exists, copy its data to the root level
         if 0 in zone_data:
             hr_status.update(zone_data[0])
 
-        # Update internal device state and notify subscribers only on change
+        # Update internal device state and notify subscribers
         try:
-            if hr_status != self._device_state:
-                # Simple delta logging for important changes (zones on/off)
-                try:
-                    old_zones = self._device_state.get('zones', {}) if self._device_state else {}
-                    for z, zstate in hr_status.get('zones', {}).items():
-                        prev = old_zones.get(z, {})
-                        if prev.get('on') != zstate.get('on'):
-                            _LOGGER.debug("Zone %s on-state changed: %s -> %s", z, prev.get('on'), zstate.get('on'))
-                except Exception:
-                    pass
-
-                self._device_state = hr_status
-                self._notify_update()
-            else:
-                _LOGGER.debug("Received state identical to current, not notifying subscribers")
+            self._device_state = hr_status
+            self._notify_update()
         except Exception:
             _LOGGER.debug("Failed to notify subscribers of decrypted state")
 
@@ -430,109 +401,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         _LOGGER.error("GATT read failed after %d attempts: %s", retries, str(last_error))
         return None
 
-    def _on_notification(self, sender, data: bytes | bytearray) -> None:
-        """Callback invoked by Bleak when a notification is received."""
-        try:
-            payload = bytes(data)
-            # Process in background so callback returns immediately
-            asyncio.create_task(self._process_notification(payload))
-        except Exception as e:
-            _LOGGER.debug("Error scheduling notification processing: %s", str(e))
-
-    async def _process_notification(self, payload: bytes) -> None:
-        """Process a notification payload asynchronously."""
-        try:
-            _LOGGER.debug("Processing notification payload: %s", payload)
-            self.decrypt(payload)
-        except Exception as e:
-            _LOGGER.debug("Failed to process notification payload: %s", str(e))
-
-    async def start_notifications(self, hass, ble_device: BLEDevice) -> bool:
-        """Start GATT notifications on the device's jsonReturn characteristic.
-
-        This will create and hold a persistent connection used to receive push
-        updates from the device. If notifications are already started, this is a no-op.
-        """
-        async with self._client_lock:
-            if self._notifications_enabled and self._client and self._client.is_connected:
-                _LOGGER.debug("Notifications already enabled for %s", ble_device.address)
-                return True
-            try:
-                self._ble_device = ble_device
-                client = await self._connect_to_device(ble_device)
-                if not client or not client.is_connected:
-                    _LOGGER.error("Failed to connect to enable notifications for %s", ble_device.address)
-                    # Mark unsupported to avoid repeated attempts
-                    self._notifications_supported = False
-                    return False
-                self._client = client
-
-                # If we already know notifications are unsupported, skip
-                if self._notifications_supported is False:
-                    _LOGGER.debug("Notifications previously detected as unsupported for %s, skipping", ble_device.address)
-                    return False
-
-                # Try lightweight authentication if credentials present
-                if self._password:
-                    try:
-                        await asyncio.sleep(0.1)
-                        await self.authenticate(self._password)
-                    except Exception as e:
-                        _LOGGER.debug("Notification auth failed: %s", str(e))
-
-                # Check characteristic properties for notify/indicate support
-                try:
-                    char = self._client.services.get_characteristic(UUIDS['jsonReturn'])
-                    props = getattr(char, 'properties', []) or []
-                    if not any(p in props for p in ('notify', 'indicate')):
-                        _LOGGER.info(
-                            "Device %s does not advertise notify/indicate on %s; falling back to quick poll",
-                            ble_device.address,
-                            UUIDS['jsonReturn'],
-                        )
-                        self._notifications_supported = False
-                        return False
-                except Exception as e:
-                    _LOGGER.debug("Could not determine characteristic properties: %s", str(e))
-                    # Be conservative - mark unsupported
-                    self._notifications_supported = False
-                    return False
-
-                await self._client.start_notify(UUIDS['jsonReturn'], self._on_notification)
-                self._notifications_enabled = True
-                self._notifications_supported = True
-                _LOGGER.info("Notifications enabled for %s", ble_device.address)
-
-                # Also trigger a quick poll immediately to prime the state
-                try:
-                    asyncio.create_task(self.request_quick_poll(hass, ble_device, interval=2.0, repeats=3))
-                except Exception:
-                    pass
-
-                return True
-            except Exception as e:
-                _LOGGER.error("Failed to start notifications for %s: %s", getattr(ble_device, 'address', str(ble_device)), str(e))
-                self._notifications_supported = False
-                return False
-    async def stop_notifications(self) -> None:
-        """Stop notifications and disconnect the persistent client if present."""
-        async with self._client_lock:
-            try:
-                if self._client and self._client.is_connected:
-                    try:
-                        await self._client.stop_notify(UUIDS['jsonReturn'])
-                    except Exception:
-                        pass
-                    try:
-                        await self._client.disconnect()
-                    except Exception:
-                        pass
-                self._client = None
-                self._notifications_enabled = False
-                _LOGGER.info("Notifications disabled")
-            except Exception as e:
-                _LOGGER.debug("Error stopping notifications: %s", str(e))
-
     async def reboot_device(self, hass, ble_device: BLEDevice) -> bool:
         """Reboot the device by sending reset command."""
         try:
@@ -634,55 +502,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         return [0]
 
-    async def request_quick_poll(self, hass, ble_device: BLEDevice, interval: float = 5.0, repeats: int = 12) -> bool:
-        """Request a short burst of frequent polls to detect external or phone-driven changes.
-
-        This schedules a background task that will run `repeats` iterations
-        at `interval` seconds apart. If a quick poll is already running,
-        this is a no-op and returns True.
-        """
-        if self._quick_poll_task and not self._quick_poll_task.done():
-            _LOGGER.debug("Quick poll already in progress")
-            return True
-
-        async def _runner():
-            _LOGGER.info("Starting quick poll burst: %d x %.1fs", repeats, interval)
-            try:
-                for i in range(repeats):
-                    try:
-                        async with self._client_lock:
-                            message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                            sent = await self.send_command(hass, ble_device, message)
-                            if sent:
-                                json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
-                                if json_payload:
-                                    try:
-                                        payload_str = json_payload.decode('utf-8')
-                                    except Exception:
-                                        payload_str = repr(json_payload)
-                                    _LOGGER.debug("Quick poll raw payload: %s", payload_str)
-                                    self.decrypt(payload_str)
-                                    self._last_poll_success = True
-                                    self._last_poll_time = time.time()
-                                else:
-                                    _LOGGER.debug("Quick poll read returned no payload")
-                                    self._last_poll_success = False
-                            else:
-                                _LOGGER.debug("Quick poll send failed")
-                                self._last_poll_success = False
-                    except Exception as e:
-                        _LOGGER.debug("Error during quick poll iteration: %s", str(e))
-                        self._last_poll_success = False
-                    await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                _LOGGER.info("Quick poll burst cancelled")
-                raise
-            finally:
-                _LOGGER.info("Quick poll burst finished")
-
-        self._quick_poll_task = asyncio.create_task(_runner())
-        return True
-
     def start_polling(self, hass, startup_delay: float = 1.0) -> None:
         """Start background polling loop (non-blocking) with a configurable startup delay.
 
@@ -748,13 +567,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 except Exception as e:
                     _LOGGER.debug("Error during poll iteration: %s", str(e))
                     self._last_poll_success = False
-
-                # If a quick poll is active, don't sleep for the main interval
-                if self._quick_poll_task and not self._quick_poll_task.done():
-                    _LOGGER.debug("Quick poll active, yielding to quick poll")
-                    await asyncio.sleep(0.5)
-                else:
-                    await asyncio.sleep(self._poll_interval)
+                await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             _LOGGER.info("Poll loop cancelled")
             raise
@@ -775,8 +588,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return False
         finally:
             try:
-                if self._client and self._client.is_connected and not getattr(self, "_notifications_enabled", False):
+                if self._client and self._client.is_connected:
                     await self._client.disconnect()
-                    self._client = None
             except Exception as e:
                 _LOGGER.debug("Error disconnecting: %s", str(e))
+            self._client = None
