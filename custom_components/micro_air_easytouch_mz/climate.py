@@ -452,11 +452,14 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         # subscribe to parser updates (store unsubscribe)
         self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
 
-        # Start notifications (best-effort) to capture phone/app-driven changes
+        # Start notifications (best-effort) to capture phone/app-driven changes, but skip if unsupported
         try:
-            ble_device = async_ble_device_from_address(self.hass, self._mac_address)
-            if ble_device:
-                asyncio.create_task(self._data.start_notifications(self.hass, ble_device))
+            if getattr(self._data, "_notifications_supported", None) is False:
+                _LOGGER.debug("Notifications unsupported on device, skipping start_notifications")
+            else:
+                ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+                if ble_device:
+                    asyncio.create_task(self._data.start_notifications(self.hass, ble_device))
         except Exception as e:
             _LOGGER.debug("Failed to start notifications: %s", str(e))
 

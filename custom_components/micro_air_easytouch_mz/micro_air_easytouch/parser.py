@@ -81,6 +81,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         # Notification/persistent connection flag
         self._notifications_enabled: bool = False
+        # Notification support: None=unknown, False=not supported, True=supported
+        self._notifications_supported: bool | None = None
 
         # Latest parsed device state (populated by `decrypt`)
         self._device_state: dict = {}
@@ -460,8 +462,15 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 client = await self._connect_to_device(ble_device)
                 if not client or not client.is_connected:
                     _LOGGER.error("Failed to connect to enable notifications for %s", ble_device.address)
+                    # Mark unsupported to avoid repeated attempts
+                    self._notifications_supported = False
                     return False
                 self._client = client
+
+                # If we already know notifications are unsupported, skip
+                if self._notifications_supported is False:
+                    _LOGGER.debug("Notifications previously detected as unsupported for %s, skipping", ble_device.address)
+                    return False
 
                 # Try lightweight authentication if credentials present
                 if self._password:
@@ -471,8 +480,27 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     except Exception as e:
                         _LOGGER.debug("Notification auth failed: %s", str(e))
 
+                # Check characteristic properties for notify/indicate support
+                try:
+                    char = self._client.services.get_characteristic(UUIDS['jsonReturn'])
+                    props = getattr(char, 'properties', []) or []
+                    if not any(p in props for p in ('notify', 'indicate')):
+                        _LOGGER.info(
+                            "Device %s does not advertise notify/indicate on %s; falling back to quick poll",
+                            ble_device.address,
+                            UUIDS['jsonReturn'],
+                        )
+                        self._notifications_supported = False
+                        return False
+                except Exception as e:
+                    _LOGGER.debug("Could not determine characteristic properties: %s", str(e))
+                    # Be conservative - mark unsupported
+                    self._notifications_supported = False
+                    return False
+
                 await self._client.start_notify(UUIDS['jsonReturn'], self._on_notification)
                 self._notifications_enabled = True
+                self._notifications_supported = True
                 _LOGGER.info("Notifications enabled for %s", ble_device.address)
 
                 # Also trigger a quick poll immediately to prime the state
@@ -484,6 +512,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 return True
             except Exception as e:
                 _LOGGER.error("Failed to start notifications for %s: %s", getattr(ble_device, 'address', str(ble_device)), str(e))
+                self._notifications_supported = False
                 return False
     async def stop_notifications(self) -> None:
         """Stop notifications and disconnect the persistent client if present."""

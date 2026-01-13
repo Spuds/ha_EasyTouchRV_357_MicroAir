@@ -38,7 +38,7 @@ request_quick_poll:
       name: MAC Address
       description: The Bluetooth MAC address of the thermostat (e.g., 00:11:22:33:44:55).
       required: true
-      example: "00:11:22:33:44:55"
+      example: "D4:8C:49:A0:AC:14"
       selector:
         text:
     interval:
