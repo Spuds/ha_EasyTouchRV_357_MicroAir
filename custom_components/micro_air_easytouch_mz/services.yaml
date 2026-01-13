@@ -36,11 +36,17 @@ request_quick_poll:
   fields:
     address:
       name: MAC Address
-      description: The Bluetooth MAC address of the thermostat (e.g., 00:11:22:33:44:55).
-      required: true
+      description: The Bluetooth MAC address of the thermostat (e.g., 00:11:22:33:44:55). If not provided, `entity_id` can be used.
+      required: false
       example: "D4:8C:49:A0:AC:14"
       selector:
         text:
+    entity_id:
+      name: Entity (alternative)
+      description: An entity id for an entity belonging to the MicroAir device (e.g., climate.zone_0). If provided, the service will resolve the related config entry.
+      required: false
+      selector:
+        entity:
     interval:
       name: Interval (seconds)
       description: Seconds between quick-poll iterations.

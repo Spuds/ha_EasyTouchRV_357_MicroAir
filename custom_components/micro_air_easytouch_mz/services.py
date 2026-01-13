@@ -26,9 +26,9 @@ SERVICE_SET_LOCATION_SCHEMA = vol.Schema(
 # Schema and handler for requesting a quick poll burst
 SERVICE_REQUEST_QUICK_POLL_SCHEMA = vol.Schema(
     {
-        vol.Required("address"): cv.string,
-        vol.Optional("interval", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
-        vol.Optional("repeats", default=8): vol.All(int, vol.Range(min=1, max=100)),
+            # Either `address` (unique_id / MAC) or `entity_id` may be provided
+            vol.Optional("address"): cv.string,
+            vol.Optional("entity_id"): cv.entity_id,
     }
 )
 
@@ -92,26 +92,57 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def handle_request_quick_poll(call: ServiceCall) -> None:
         """Handle the request_quick_poll service call."""
         address = call.data.get("address")
+        entity_id = call.data.get("entity_id")
         interval = float(call.data.get("interval", 3.0))
         repeats = int(call.data.get("repeats", 8))
 
         # Find the config entry by MAC address (unique_id)
         config_entry = None
         for entry in hass.config_entries.async_entries(DOMAIN):
-            if entry.unique_id == address:
+            if address and entry.unique_id == address:
                 config_entry = entry
                 break
 
+        # If not found by unique_id, try resolving by entity_id
+        if not config_entry and entity_id:
+            try:
+                from homeassistant.helpers import entity_registry as er
+                registry = er.async_get(hass)
+                entity = registry.async_get(entity_id)
+                if entity and entity.config_entry_id:
+                    config_entry = hass.config_entries.async_get_entry(entity.config_entry_id)
+            except Exception:
+                pass
+
+        # If still not found, try normalized matching (case, separators)
+        def _normalize(s: str) -> str:
+            return s.lower().replace(':', '').replace('-', '').replace('.', '')
+
+        if not config_entry and address:
+            norm = _normalize(address)
+            for entry in hass.config_entries.async_entries(DOMAIN):
+                if entry.unique_id and _normalize(str(entry.unique_id)) == norm:
+                    config_entry = entry
+                    break
+
         if not config_entry:
-            _LOGGER.error("No MicroAirEasyTouch config entry found for address %s", address)
+            known = [entry.unique_id for entry in hass.config_entries.async_entries(DOMAIN)]
+            _LOGGER.error(
+                "No MicroAirEasyTouch config entry found for address '%s' (known entries: %s)",
+                address or entity_id,
+                known,
+            )
             return
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
+        # Determine BLE address to use (prefer provided address, otherwise use config entry unique_id)
+        ble_address = address or config_entry.unique_id
+
         # Get BLE device
-        ble_device = async_ble_device_from_address(hass, address)
+        ble_device = async_ble_device_from_address(hass, ble_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s", address)
+            _LOGGER.error("Could not find BLE device for address %s", ble_address)
             return
 
         try:
