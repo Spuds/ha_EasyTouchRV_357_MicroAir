@@ -1,6 +1,6 @@
 {
     "domain": "micro_air_easytouch_mz",
-    "name": "Micro-Air EasyTouch Thermostat",
+    "name": "Micro-Air EasyTouch RV Thermostat",
     "bluetooth": [
         {
             "local_name": "EasyTouch*",
@@ -8,7 +8,8 @@
         }
     ],
     "codeowners": [
-        "@Spuds"
+        "@Spuds",
+        "@k3vmcd"
     ],
     "config_flow": true,
     "dependencies": [

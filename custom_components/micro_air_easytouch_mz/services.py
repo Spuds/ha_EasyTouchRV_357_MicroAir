@@ -80,6 +80,57 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=SERVICE_SET_LOCATION_SCHEMA,
     )
 
+    # Schema and handler for requesting a quick poll burst
+    SERVICE_REQUEST_QUICK_POLL_SCHEMA = vol.Schema(
+        {
+            vol.Required("address"): cv.string,
+            vol.Optional("interval", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
+            vol.Optional("repeats", default=8): vol.All(int, vol.Range(min=1, max=100)),
+        }
+    )
+
+    async def handle_request_quick_poll(call: ServiceCall) -> None:
+        """Handle the request_quick_poll service call."""
+        address = call.data.get("address")
+        interval = float(call.data.get("interval", 3.0))
+        repeats = int(call.data.get("repeats", 8))
+
+        # Find the config entry by MAC address (unique_id)
+        config_entry = None
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if entry.unique_id == address:
+                config_entry = entry
+                break
+
+        if not config_entry:
+            _LOGGER.error("No MicroAirEasyTouch config entry found for address %s", address)
+            return
+
+        device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
+
+        # Get BLE device
+        ble_device = async_ble_device_from_address(hass, address)
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s", address)
+            return
+
+        try:
+            success = await device_data.request_quick_poll(hass, ble_device, interval=interval, repeats=repeats)
+            if success:
+                _LOGGER.info("Quick poll requested for device %s (interval=%.2f, repeats=%d)", address, interval, repeats)
+            else:
+                _LOGGER.error("Quick poll request failed for device %s", address)
+        except Exception as e:
+            _LOGGER.error("Error requesting quick poll for device %s: %s", address, str(e))
+
+    hass.services.async_register(
+        DOMAIN,
+        "request_quick_poll",
+        handle_request_quick_poll,
+        schema=SERVICE_REQUEST_QUICK_POLL_SCHEMA,
+    )
+
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister services for the MicroAirEasyTouch integration."""
     hass.services.async_remove(DOMAIN, "set_location")
+    hass.services.async_remove(DOMAIN, "request_quick_poll")

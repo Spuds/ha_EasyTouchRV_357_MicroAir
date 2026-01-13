@@ -12,12 +12,13 @@ UUIDS = {
 # Map EasyTouch modes to Home Assistant HVAC modes
 HA_MODE_TO_EASY_MODE = {
     HVACMode.OFF: 0,
-    HVACMode.FAN_ONLY: 1,
-    HVACMode.COOL: 2,
     HVACMode.HEAT: 4,
-    HVACMode.DRY: 6,
+    HVACMode.COOL: 2,
     HVACMode.AUTO: 11,
+    HVACMode.FAN_ONLY: 1,
+    HVACMode.DRY: 6,
 }
+
 EASY_MODE_TO_HA_MODE = {v: k for k, v in HA_MODE_TO_EASY_MODE.items()}
 
 # Fan mode mappings (general and mode-specific)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+import asyncio
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -20,6 +21,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 
 from .const import DOMAIN
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
@@ -80,6 +82,9 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_hvac_modes = list(HA_MODE_TO_EASY_MODE.keys())
     _attr_should_poll = True
+    _attr_min_temp = 55
+    _attr_max_temp = 85
+    _attr_target_temperature_step = 1.0
 
     # Map our modes to Home Assistant fan icons
     _FAN_MODE_ICONS = {
@@ -439,3 +444,42 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         """Update the entity state manually if needed."""
         _LOGGER.debug("Updating state for zone %s", self._zone)
         await self._async_fetch_initial_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # perform initial fetch
+        await self._async_fetch_initial_state()
+        # subscribe to parser updates (store unsubscribe)
+        self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
+
+        # Start notifications (best-effort) to capture phone/app-driven changes
+        try:
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+            if ble_device:
+                asyncio.create_task(self._data.start_notifications(self.hass, ble_device))
+        except Exception as e:
+            _LOGGER.debug("Failed to start notifications: %s", str(e))
+
+    def _handle_update(self) -> None:
+        # Update self._state from parser (guard for missing data)
+        full_state = self._data.async_get_device_data()
+        new_zone_state = full_state.get("zones", {}).get(self._zone) if full_state else None
+        if not new_zone_state:
+            return
+
+        self._state = new_zone_state
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        await super().async_will_remove_from_hass()
+
+        # Unsubscribe from updates
+        if getattr(self, "_unsub_updates", None):
+            self._unsub_updates()
+            self._unsub_updates = None
+
+        # Best-effort stop notifications (may be used by other entities)
+        try:
+            await self._data.stop_notifications()
+        except Exception as e:
+            _LOGGER.debug("Failed to stop notifications cleanly: %s", str(e))
