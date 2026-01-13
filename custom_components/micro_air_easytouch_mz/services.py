@@ -23,6 +23,15 @@ SERVICE_SET_LOCATION_SCHEMA = vol.Schema(
     }
 )
 
+# Schema and handler for requesting a quick poll burst
+SERVICE_REQUEST_QUICK_POLL_SCHEMA = vol.Schema(
+    {
+        vol.Required("address"): cv.string,
+        vol.Optional("interval", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
+        vol.Optional("repeats", default=8): vol.All(int, vol.Range(min=1, max=100)),
+    }
+)
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register services for the MicroAirEasyTouch integration."""
     async def handle_set_location(call: ServiceCall) -> None:
@@ -78,15 +87,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
         "set_location",
         handle_set_location,
         schema=SERVICE_SET_LOCATION_SCHEMA,
-    )
-
-    # Schema and handler for requesting a quick poll burst
-    SERVICE_REQUEST_QUICK_POLL_SCHEMA = vol.Schema(
-        {
-            vol.Required("address"): cv.string,
-            vol.Optional("interval", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
-            vol.Optional("repeats", default=8): vol.All(int, vol.Range(min=1, max=100)),
-        }
     )
 
     async def handle_request_quick_poll(call: ServiceCall) -> None:
