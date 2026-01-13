@@ -5,6 +5,7 @@ import logging
 import time
 import asyncio
 from typing import Any
+from datetime import timedelta
 
 from homeassistant.components.climate import (
     ClimateEntity,
@@ -12,16 +13,13 @@ from homeassistant.components.climate import (
     HVACMode,
     HVACAction,
 )
-from homeassistant.const import (
-    ATTR_TEMPERATURE,
-    UnitOfTemperature,
-)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
@@ -34,6 +32,8 @@ from .micro_air_easytouch.const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+POLL_INTERVAL = timedelta(seconds=60)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -81,7 +81,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     )
     _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_hvac_modes = list(HA_MODE_TO_EASY_MODE.keys())
-    _attr_should_poll = True
+    _attr_should_poll = False
     _attr_min_temp = 55
     _attr_max_temp = 85
     _attr_target_temperature_step = 1.0
@@ -451,6 +451,24 @@ async def async_added_to_hass(self) -> None:
     await self._async_fetch_initial_state()
     # subscribe to parser updates (store unsubscribe)
     self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
+    # Schedule periodic polling
+    self._poll_task = async_track_time_interval(
+        lambda now: self.hass.async_create_task(self._async_fetch_initial_state()),
+        POLL_INTERVAL,
+    )
+
+async def async_will_remove_from_hass(self) -> None:
+    await super().async_will_remove_from_hass()
+    
+    # Unsubscribe from updates
+    if self._unsub_updates:
+        self._unsub_updates()
+        self._unsub_updates = None
+
+     # Cancel polling
+    if self._poll_task:
+        self._poll_task()
+        self._poll_task = None       
 
 def _handle_update(self, full_state) -> None:
     # Update self._state from parser (guard for missing data)
@@ -460,11 +478,3 @@ def _handle_update(self, full_state) -> None:
         
     self._state = new_zone_state
     self.async_write_ha_state()
-
-async def async_will_remove_from_hass(self) -> None:
-    await super().async_will_remove_from_hass()
-    
-    # Unsubscribe from updates
-    if self._unsub_updates:
-        self._unsub_updates()
-        self._unsub_updates = None
