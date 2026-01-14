@@ -339,30 +339,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         if 0 in zone_data:
             hr_status.update(zone_data[0])
 
-        # Compare against previous state and log mode changes per zone for easier debugging
+        # Apply parsed state as authoritative and notify subscribers
         try:
-            prev = self._device_state or {}
-            diffs = []
-            for z, new_zone in hr_status.get('zones', {}).items():
-                try:
-                    z = int(z)
-                except Exception:
-                    pass
-                old_zone = (prev.get('zones') or {}).get(z, {})
-                old_mode = old_zone.get('mode_num')
-                new_mode = new_zone.get('mode_num')
-                old_current = old_zone.get('current_mode_num')
-                new_current = new_zone.get('current_mode_num')
-                if old_mode != new_mode or old_current != new_current:
-                    diffs.append({
-                        'zone': z,
-                        'mode_num': (old_mode, new_mode),
-                        'current_mode_num': (old_current, new_current),
-                    })
-            if diffs:
-                _LOGGER.debug("Detected mode/current_mode changes: %s", diffs)
-
-            # Update internal device state and notify subscribers
+            _LOGGER.debug("Applying parsed device state (zones=%d)", len(hr_status.get('zones', {})))
+            # Overwrite the stored parsed state — polls are authoritative
             self._device_state = hr_status
             self._notify_update()
         except Exception as e:
@@ -663,6 +643,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                 _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
                                 # Pass bytes directly to decrypt (it accepts bytes or str)
                                 self.decrypt(json_payload)
+                                _LOGGER.debug("Poll applied authoritative state for device %s", getattr(self._ble_device, 'address', getattr(self, '_address', None)))
                                 self._last_poll_success = True
                                 self._last_poll_time = time.time()
                             else:
@@ -700,3 +681,38 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             except Exception as e:
                 _LOGGER.debug("Error disconnecting: %s", str(e))
             self._client = None
+
+    async def request_quick_poll(self, hass, ble_device: BLEDevice, interval: float = 0.5, repeats: int = 3) -> bool:
+        """Perform a short burst of polls to quickly verify device state.
+
+        This is intended to be used after UI-initiated commands to get prompt
+        confirmation without waiting for the normal poll interval.
+        """
+        if ble_device is None:
+            ble_device = self._ble_device
+            if ble_device is None:
+                _LOGGER.debug("No BLE device available for quick poll")
+                return False
+
+        _LOGGER.debug("Starting quick poll burst: interval=%.2f repeats=%d", interval, repeats)
+        success = False
+        for i in range(max(1, int(repeats))):
+            try:
+                msg = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                sent = await self.send_command(hass, ble_device, msg)
+                if not sent:
+                    _LOGGER.debug("Quick poll send_command failed on attempt %d", i + 1)
+                    continue
+                payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
+                if payload:
+                    preview, full_b64 = _format_payload_for_log(payload)
+                    _LOGGER.debug("Quick poll payload preview: %s (len=%d)", preview, len(payload))
+                    self.decrypt(payload)
+                    success = True
+                else:
+                    _LOGGER.debug("Quick poll read returned no payload on attempt %d", i + 1)
+            except Exception as e:
+                _LOGGER.debug("Quick poll attempt %d failed: %s", i + 1, str(e))
+            await asyncio.sleep(interval)
+        _LOGGER.debug("Quick poll burst completed (success=%s)", success)
+        return success

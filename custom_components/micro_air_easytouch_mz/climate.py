@@ -321,6 +321,11 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic temperature update: %s", str(e))
                 try:
+                    # Trigger a quick poll burst to verify the change promptly
+                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
+                except Exception:
+                    pass
+                try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
                     pass
@@ -360,7 +365,11 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic hvac_mode update: %s", str(e))
 
-                # Verify by fetching the real state in background
+                # Trigger a quick poll burst for fast verification and verify by fetching the real state in background
+                try:
+                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
+                except Exception:
+                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
@@ -395,6 +404,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     self.async_write_ha_state()
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan-only update: %s", str(e))
+                try:
+                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
+                except Exception:
+                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
@@ -434,6 +447,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     self.async_write_ha_state()
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan update: %s", str(e))
+                try:
+                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
+                except Exception:
+                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
