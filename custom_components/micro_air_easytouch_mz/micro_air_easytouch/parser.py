@@ -516,12 +516,12 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         return [0]
 
-    async def request_quick_poll(self, hass, ble_device: BLEDevice, interval: float = 5.0, repeats: int = 12) -> bool:
+    async def request_quick_poll(self, hass, ble_device_or_address, interval: float = 5.0, repeats: int = 12) -> bool:
         """Request a short burst of frequent polls to detect external or phone-driven changes.
 
-        This schedules a background task that will run `repeats` iterations
-        at `interval` seconds apart. If a quick poll is already running,
-        this is a no-op and returns True.
+        If `ble_device_or_address` is a BLEDevice, it will be used directly. If it's a string
+        (MAC address), this function will create a short-lived connection for each poll
+        iteration so polling works even when no BLEDevice object is available in the system.
         """
         if self._quick_poll_task and not self._quick_poll_task.done():
             _LOGGER.info("Quick poll already in progress; skipping new request")
@@ -532,26 +532,76 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             try:
                 for i in range(repeats):
                     try:
+                        # Use client lock to protect BLE operations
                         async with self._client_lock:
-                            message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                            sent = await self.send_command(hass, ble_device, message)
-                            if sent:
-                                json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
-                                if json_payload:
-                                    try:
-                                        payload_str = json_payload.decode('utf-8')
-                                    except Exception:
-                                        payload_str = repr(json_payload)
-                                    _LOGGER.debug("Quick poll raw payload: %s", payload_str)
-                                    self.decrypt(payload_str)
-                                    self._last_poll_success = True
-                                    self._last_poll_time = time.time()
-                                else:
-                                    _LOGGER.debug("Quick poll read returned no payload")
+                            if isinstance(ble_device_or_address, str):
+                                # Address string path: establish short-lived connection
+                                address = ble_device_or_address
+                                try:
+                                    client = await establish_connection(
+                                        BleakClientWithServiceCache,
+                                        None,
+                                        address,
+                                        timeout=10.0,
+                                    )
+                                    if not client or not client.is_connected:
+                                        _LOGGER.debug("Quick poll short-lived connect failed for %s", address)
+                                    else:
+                                        # Optional lightweight auth
+                                        if self._password:
+                                            try:
+                                                await client.write_gatt_char(UUIDS["passwordCmd"], self._password.encode('utf-8'), response=True)
+                                            except Exception:
+                                                pass
+                                        try:
+                                            cmd = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                                            await client.write_gatt_char(UUIDS["jsonCmd"], json.dumps(cmd).encode('utf-8'), response=True)
+                                            await asyncio.sleep(0.2)
+                                            payload = await client.read_gatt_char(UUIDS["jsonReturn"])
+                                            if payload:
+                                                try:
+                                                    payload_str = payload.decode('utf-8')
+                                                except Exception:
+                                                    payload_str = repr(payload)
+                                                _LOGGER.debug("Quick poll (addr) raw payload: %s", payload_str)
+                                                self.decrypt(payload_str)
+                                                self._last_poll_success = True
+                                                self._last_poll_time = time.time()
+                                            else:
+                                                _LOGGER.debug("Quick poll (addr) read returned no payload")
+                                                self._last_poll_success = False
+                                        except Exception as e:
+                                            _LOGGER.debug("Quick poll (addr) read/write failed: %s", str(e))
+                                            self._last_poll_success = False
+                                        try:
+                                            if client and client.is_connected:
+                                                await client.disconnect()
+                                        except Exception:
+                                            pass
+                                except Exception as e:
+                                    _LOGGER.debug("Quick poll connection error for %s: %s", address, str(e))
                                     self._last_poll_success = False
                             else:
-                                _LOGGER.debug("Quick poll send failed")
-                                self._last_poll_success = False
+                                # BLEDevice path: use existing send/read helpers
+                                message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                                sent = await self.send_command(hass, ble_device_or_address, message)
+                                if sent:
+                                    json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device_or_address)
+                                    if json_payload:
+                                        try:
+                                            payload_str = json_payload.decode('utf-8')
+                                        except Exception:
+                                            payload_str = repr(json_payload)
+                                        _LOGGER.debug("Quick poll raw payload: %s", payload_str)
+                                        self.decrypt(payload_str)
+                                        self._last_poll_success = True
+                                        self._last_poll_time = time.time()
+                                    else:
+                                        _LOGGER.debug("Quick poll read returned no payload")
+                                        self._last_poll_success = False
+                                else:
+                                    _LOGGER.debug("Quick poll send failed")
+                                    self._last_poll_success = False
                     except Exception as e:
                         _LOGGER.debug("Error during quick poll iteration: %s", str(e))
                         self._last_poll_success = False
@@ -561,6 +611,15 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 raise
             finally:
                 _LOGGER.info("Quick poll burst finished")
+
+        # For immediate verification (single iteration), run synchronously so callers
+        # can observe results immediately in tests or when immediate feedback is desired.
+        if repeats == 1:
+            try:
+                await _runner()
+            except asyncio.CancelledError:
+                _LOGGER.info("Quick poll runner cancelled during synchronous execution")
+            return True
 
         self._quick_poll_task = asyncio.create_task(_runner())
         return True
