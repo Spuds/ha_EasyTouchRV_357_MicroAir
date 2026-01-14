@@ -264,7 +264,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 zone_status['mode_num'] = info[10]
                 zone_status['heat_fan_mode_num'] = info[11]  # Fan setting in heat mode
                 zone_status['facePlateTemperature'] = info[12]
-                zone_status['current_mode_num'] = info[15]
+                zone_status['current_mode_num'] = info[15] # Current operating mode when in AUTO mode
 
                 if 7 in param:
                     zone_status['off'] = True
@@ -272,10 +272,16 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     zone_status['on'] = True
 
                 # Map modes
-                if zone_status['current_mode_num'] in modes:
+                # Only use current_mode_num when non-zero; zero indicates 'no specific current mode'.
+                if zone_status['current_mode_num'] in modes and zone_status['current_mode_num'] != 0:
                     zone_status['current_mode'] = modes[zone_status['current_mode_num']]
                 if zone_status['mode_num'] in modes:
                     zone_status['mode'] = modes[zone_status['mode_num']]
+
+                # For non-auto modes the device may set current_mode_num to 0.
+                # In that case, the chosen 'mode' is also the current operating mode.
+                if 'current_mode' not in zone_status or not zone_status.get('current_mode'):
+                    zone_status['current_mode'] = zone_status.get('mode')
 
                 # Detect heat source if mode_num indicates heat variants
                 if zone_status.get('mode_num') in (4, 5):
