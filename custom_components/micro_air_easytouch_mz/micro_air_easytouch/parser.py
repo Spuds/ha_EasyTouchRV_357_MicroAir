@@ -7,6 +7,55 @@ import time
 import json
 import base64
 
+# Bluetooth-related imports for device communication
+from bleak import BLEDevice
+from bleak.exc import BleakError
+from bleak_retry_connector import (
+    BleakClientWithServiceCache,
+    establish_connection,
+    retry_bluetooth_connection_error,
+)
+
+from bluetooth_data_tools import short_address
+from bluetooth_sensor_state_data import BluetoothData
+from home_assistant_bluetooth import BluetoothServiceInfo
+from sensor_state_data.enum import StrEnum
+
+from ..const import DOMAIN
+from .const import UUIDS, FAN_MODES_FULL, FAN_MODES_FAN_ONLY
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def retry_authentication(retries=3, delay=1):
+    """Custom retry decorator for authentication attempts."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(retries):
+                try:
+                    result = await func(*args, **kwargs)
+                    if result:
+                        _LOGGER.debug("Authentication successful on attempt %d/%d", attempt + 1, retries)
+                        return True
+                    _LOGGER.debug("Authentication returned False on attempt %d/%d", attempt + 1, retries)
+                    if attempt < retries - 1:
+                        await asyncio.sleep(delay)
+                        continue
+                except Exception as e:
+                    last_exception = e
+                    _LOGGER.debug("Authentication attempt %d/%d failed: %s", attempt + 1, retries, str(e))
+                    if attempt < retries - 1:
+                        await asyncio.sleep(delay)
+                        continue
+            if last_exception:
+                _LOGGER.error("Authentication failed after %d attempts: %s", retries, str(last_exception))
+            else:
+                _LOGGER.error("Authentication failed after %d attempts with no exception", retries)
+            return False
+        return wrapper
+    return decorator
 
 def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
     """Return a short printable preview and a base64-encoded full payload.
@@ -49,54 +98,6 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
         return preview, full_b64
     except Exception:
         return ('', '')
-
-# Bluetooth-related imports for device communication
-from bleak import BLEDevice
-from bleak.exc import BleakError
-from bleak_retry_connector import (
-    BleakClientWithServiceCache,
-    establish_connection,
-    retry_bluetooth_connection_error,
-)
-
-from bluetooth_data_tools import short_address
-from bluetooth_sensor_state_data import BluetoothData
-from home_assistant_bluetooth import BluetoothServiceInfo
-from sensor_state_data.enum import StrEnum
-
-from ..const import DOMAIN
-from .const import UUIDS
-
-_LOGGER = logging.getLogger(__name__)
-def retry_authentication(retries=3, delay=1):
-    """Custom retry decorator for authentication attempts."""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(retries):
-                try:
-                    result = await func(*args, **kwargs)
-                    if result:
-                        _LOGGER.debug("Authentication successful on attempt %d/%d", attempt + 1, retries)
-                        return True
-                    _LOGGER.debug("Authentication returned False on attempt %d/%d", attempt + 1, retries)
-                    if attempt < retries - 1:
-                        await asyncio.sleep(delay)
-                        continue
-                except Exception as e:
-                    last_exception = e
-                    _LOGGER.debug("Authentication attempt %d/%d failed: %s", attempt + 1, retries, str(e))
-                    if attempt < retries - 1:
-                        await asyncio.sleep(delay)
-                        continue
-            if last_exception:
-                _LOGGER.error("Authentication failed after %d attempts: %s", retries, str(last_exception))
-            else:
-                _LOGGER.error("Authentication failed after %d attempts with no exception", retries)
-            return False
-        return wrapper
-    return decorator
 
 class MicroAirEasyTouchSensor(StrEnum):
     """Enumeration of all available sensors for the MicroAir EasyTouch device."""
@@ -241,8 +242,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             
         param = status.get('PRM', [])
         modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 11: "auto", 10: "auto"}
-        fan_modes_full = {0: "off", 1: "manualL", 2: "manualH", 65: "cycledL", 66: "cycledH", 128: "full auto"}
-        fan_modes_fan_only = {0: "off", 1: "low", 2: "high"}
+        # Reuse module-level FAN_MODES_* constants to avoid duplication and ensure consistency
         
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
@@ -307,19 +307,19 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 if current_mode == "fan":
                     fan_num = info[6]
                     zone_status['fan_mode_num'] = fan_num
-                    zone_status['fan_mode'] = fan_modes_fan_only.get(fan_num, "off")
+                    zone_status['fan_mode'] = FAN_MODES_FAN_ONLY.get(fan_num, "off")
                 elif current_mode == "cool":
                     fan_num = info[7]
                     zone_status['cool_fan_mode_num'] = fan_num
-                    zone_status['cool_fan_mode'] = fan_modes_full.get(fan_num, "full auto")
+                    zone_status['cool_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "heat":
                     fan_num = info[11]
                     zone_status['heat_fan_mode_num'] = fan_num
-                    zone_status['heat_fan_mode'] = fan_modes_full.get(fan_num, "full auto")
+                    zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "auto":
                     fan_num = info[9]
                     zone_status['auto_fan_mode_num'] = fan_num
-                    zone_status['auto_fan_mode'] = fan_modes_full.get(fan_num, "full auto")
+                    zone_status['auto_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
 
                 zone_data[zone_num] = zone_status
             except (ValueError, IndexError, KeyError) as e:
