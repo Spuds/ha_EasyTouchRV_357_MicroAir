@@ -30,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Start polling by default so we can obtain full status for devices that do not advertise
     try:
-        data.start_polling(hass)
+        data.start_polling(hass, startup_delay=1.0, address=address)
     except Exception as e:
         _LOGGER.debug("Failed to start polling task: %s", str(e))
 

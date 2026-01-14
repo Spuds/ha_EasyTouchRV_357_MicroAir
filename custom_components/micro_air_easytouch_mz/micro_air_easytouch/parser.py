@@ -506,9 +506,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         return [0]
 
-    def start_polling(self, hass, startup_delay: float = 1.0) -> None:
+    def start_polling(self, hass, startup_delay: float = 1.0, address: str | None = None) -> None:
         """Start background polling loop (non-blocking) with a configurable startup delay.
 
+        If `address` is provided, the poll loop will attempt to resolve the BLE
+        device from the bluetooth integration if no advertisement has been seen.
         The tiny delay (default 1s) lets Home Assistant finish platform setup before we
         start potentially slow GATT connect/read operations. Tests can pass a
         `startup_delay=0` to run immediately.
@@ -519,6 +521,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         if self._poll_task and not self._poll_task.done():
             _LOGGER.debug("Polling already running")
             return
+
+        # Store the address to allow the poll loop to resolve the BLE device
+        if address:
+            self._address = address
 
         async def _starter():
             # Give the system a moment to finish setup to avoid blocking time-sensitive startup
@@ -545,6 +551,16 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         try:
             while True:
                 try:
+                    # If we don't have a BLEDevice from advertisements, try to resolve it by stored address
+                    if not self._ble_device and getattr(self, "_address", None):
+                        try:
+                            from homeassistant.components.bluetooth import async_ble_device_from_address
+                            self._ble_device = async_ble_device_from_address(hass, self._address)
+                            if self._ble_device:
+                                _LOGGER.debug("Resolved BLE device %s for polling", self._address)
+                        except Exception as e:
+                            _LOGGER.debug("Error resolving BLE device from address %s: %s", getattr(self, "_address", None), str(e))
+
                     if not self._ble_device:
                         _LOGGER.debug("No BLE device known, skipping poll iteration")
                         self._last_poll_success = False

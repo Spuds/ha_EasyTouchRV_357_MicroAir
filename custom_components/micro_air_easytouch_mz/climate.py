@@ -466,29 +466,19 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         await self._async_fetch_initial_state()
 
 async def async_added_to_hass(self) -> None:
-    await super().async_added_to_hass()
-    # perform initial fetch
-    await self._async_fetch_initial_state()
-    # subscribe to parser updates (store unsubscribe)
-    self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
-    # Schedule periodic polling
-    self._poll_task = async_track_time_interval(
-        lambda now: self.hass.async_create_task(self._async_fetch_initial_state()),
-        POLL_INTERVAL,
-    )
+        await super().async_added_to_hass()
+        # perform initial fetch
+        await self._async_fetch_initial_state()
+        # subscribe to parser updates (store unsubscribe)
+        self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
 
 async def async_will_remove_from_hass(self) -> None:
     await super().async_will_remove_from_hass()
-    
+      
     # Unsubscribe from updates
     if self._unsub_updates:
         self._unsub_updates()
         self._unsub_updates = None
-
-     # Cancel polling
-    if self._poll_task:
-        self._poll_task()
-        self._poll_task = None       
 
 def _handle_update(self, full_state) -> None:
     # Update self._state from parser (guard for missing data)
