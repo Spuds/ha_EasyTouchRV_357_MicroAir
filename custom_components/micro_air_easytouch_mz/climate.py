@@ -336,11 +336,12 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
         mode = HA_MODE_TO_EASY_MODE.get(hvac_mode)
         if mode is not None:
+            # Note: For zone-specific OFF we must send power=1 with mode=0; power=0 is a system-wide OFF (all zones).
             message = {
                 "Type": "Change",
                 "Changes": {
                     "zone": self._zone,
-                    "power": 0 if hvac_mode == HVACMode.OFF else 1,
+                    "power": 1,
                     "mode": mode,
                 },
             }
@@ -440,11 +441,30 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             else:
                 _LOGGER.warning("Failed to set fan mode for zone %s", self._zone)
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs: dict = {}
+        # Expose raw fields useful for debugging and automations
+        for k in (
+            "mode_num",
+            "current_mode_num",
+            "heat_source",
+            "on",
+            "off",
+            "facePlateTemperature",
+        ):
+            if k in self._state:
+                attrs[k] = self._state.get(k)
+        # Indicate whether device supports notifications
+        attrs["notifications_supported"] = getattr(self._data, "_notifications_supported", None)
+        return attrs
+
     async def async_update(self) -> None:
         """Update the entity state manually if needed."""
         _LOGGER.debug("Updating state for zone %s", self._zone)
         await self._async_fetch_initial_state()
-    
+
 async def async_added_to_hass(self) -> None:
     await super().async_added_to_hass()
     # perform initial fetch

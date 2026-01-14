@@ -14,7 +14,6 @@ from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 
 _LOGGER = logging.getLogger(__name__)
 
-
 def _normalize(s: str) -> str:
     """Normalize identifiers for loose matching (lowercase, strip separators)."""
     return str(s).lower().replace(':', '').replace('-', '').replace('.', '')

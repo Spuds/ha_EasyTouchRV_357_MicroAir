@@ -183,7 +183,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return {'available_zones': [0], 'zones': {0: {}}}
             
         param = status.get('PRM', [])
-        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 11: "auto"}
+        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 8: "auto", 10: "auto", 11: "auto"}
         fan_modes_full = {0: "off", 1: "manualL", 2: "manualH", 65: "cycledL", 66: "cycledH", 128: "full auto"}
         fan_modes_fan_only = {0: "off", 1: "low", 2: "high"}
         
@@ -232,6 +232,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     zone_status['current_mode'] = modes[zone_status['current_mode_num']]
                 if zone_status['mode_num'] in modes:
                     zone_status['mode'] = modes[zone_status['mode_num']]
+
+                # Detect heat source if mode_num indicates heat variants
+                if zone_status.get('mode_num') in (4, 5):
+                    zone_status['heat_source'] = 'furnace' if zone_status['mode_num'] == 4 else 'heat_pump'
 
                 # Map fan modes based on current mode
                 current_mode = zone_status.get('mode', "off")

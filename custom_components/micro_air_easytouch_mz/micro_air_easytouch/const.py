@@ -14,12 +14,18 @@ HA_MODE_TO_EASY_MODE = {
     HVACMode.OFF: 0,
     HVACMode.HEAT: 4,
     HVACMode.COOL: 2,
-    HVACMode.AUTO: 11,
+    HVACMode.AUTO: 10,  # Use 10 for AUTO pairing with heatpump
     HVACMode.FAN_ONLY: 1,
     HVACMode.DRY: 6,
 }
 
+# Reverse mapping for reported codes -> HA modes. Add extra reported-only mappings.
 EASY_MODE_TO_HA_MODE = {v: k for k, v in HA_MODE_TO_EASY_MODE.items()}
+
+# Device may report mode 5 for heat (heatpump) and 8/11 for auto — map them to HA modes for status
+EASY_MODE_TO_HA_MODE[5] = HVACMode.HEAT # heatpump
+EASY_MODE_TO_HA_MODE[11] = HVACMode.AUTO # auto (AC/Furnace)
+EASY_MODE_TO_HA_MODE[8] = HVACMode.AUTO # auto (generic)
 
 # Fan mode mappings (general and mode-specific)
 FAN_MODES_FULL = {
@@ -30,9 +36,11 @@ FAN_MODES_FULL = {
     "cycledH": 66,
     "full auto": 128,
 }
+
 FAN_MODES_FAN_ONLY = {
     "off": 0,
     "low": 1,  # manualL
     "high": 2,  # manualH
 }
+
 FAN_MODES_REVERSE = {v: k for k, v in FAN_MODES_FULL.items()}

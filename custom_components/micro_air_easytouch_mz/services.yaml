@@ -29,3 +29,87 @@ set_location:
           min: -180.0
           max: 180.0
           mode: box
+
+request_quick_poll:
+  name: Request Quick Poll
+  description: "Request the integration to run a short burst of polls to detect external or phone-app driven changes. Useful when the device does not emit notifications."
+  fields:
+    address:
+      name: MAC Address
+      description: The Bluetooth MAC address of the thermostat (e.g., 00:11:22:33:44:55). If not provided, `entity_id` can be used.
+      required: false
+      example: "00:11:22:33:44:55"
+      selector:
+        text:
+    entity_id:
+      name: Entity (alternative)
+      description: An entity id for an entity belonging to the MicroAir device (e.g., climate.zone_0). If provided, the service will resolve the related config entry.
+      required: false
+      selector:
+        entity:
+    interval:
+      name: Interval (seconds)
+      description: Seconds between quick-poll iterations.
+      required: false
+      example: 3.0
+      selector:
+        number:
+          min: 0.1
+          mode: box
+    repeats:
+      name: Repeats
+      description: Number of quick-poll iterations to perform.
+      required: false
+      example: 8
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: box
+
+
+test_set_mode:
+  name: Test Set Mode
+  description: "Developer-only service to send a raw mode integer to a zone for exploratory testing. Use with caution."
+  fields:
+    address:
+      name: MAC Address
+      description: The Bluetooth MAC address of the thermostat (e.g., 00:11:22:33:44:55). If not provided, `entity_id` can be used.
+      required: false
+      example: "00:11:22:33:44:55"
+      selector:
+        text:
+    entity_id:
+      name: Entity (alternative)
+      description: An entity id for an entity belonging to the MicroAir device (e.g., climate.zone_0). If provided, the service will resolve the related config entry.
+      required: false
+      selector:
+        entity:
+    zone:
+      name: Zone
+      description: The zone index to send the mode to (0-based)
+      required: true
+      example: 0
+      selector:
+        number:
+          min: 0
+          mode: box
+    mode:
+      name: Mode integer
+      description: Raw mode integer to send to the device (e.g., 3, 5, etc.)
+      required: true
+      example: 3
+      selector:
+        number:
+          min: 0
+          mode: box
+    power:
+      name: Power
+      description: 1 to turn on device, 0 to turn off (default 1)
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 1
+          mode: box
