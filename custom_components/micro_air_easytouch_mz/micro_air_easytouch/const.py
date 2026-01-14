@@ -44,3 +44,35 @@ FAN_MODES_FAN_ONLY = {
 }
 
 FAN_MODES_REVERSE = {v: k for k, v in FAN_MODES_FULL.items()}
+
+# Mapping of numeric mode codes to readable internal names (used by parser)
+MODE_NUM_TO_NAME = {
+    0: "off",
+    5: "heat_pump",
+    4: "heat",
+    3: "cool_on",
+    2: "cool",
+    1: "fan",
+    8: "auto",
+    11: "auto",
+    6: "dry",
+    10: "auto",
+}
+
+# Z_sts array indexes (indexes in the device's Z_sts list)
+Z_STS_IDX_AUTO_HEAT_SP = 0
+Z_STS_IDX_AUTO_COOL_SP = 1
+Z_STS_IDX_COOL_SP = 2
+Z_STS_IDX_HEAT_SP = 3
+Z_STS_IDX_DRY_SP = 4
+Z_STS_IDX_UNKNOWN_5 = 5
+Z_STS_IDX_FAN_ONLY_MODE = 6
+Z_STS_IDX_COOL_FAN = 7
+Z_STS_IDX_HEATPUMP_FAN = 8  # observed for heat pump mode (5)
+Z_STS_IDX_AUTO_FAN = 9
+Z_STS_IDX_MODE = 10
+Z_STS_IDX_HEAT_FAN = 11     # observed for furnace mode (4)
+Z_STS_IDX_FACEPLATE_TEMP = 12
+Z_STS_IDX_UNKNOWN_13 = 13
+Z_STS_IDX_UNKNOWN_14 = 14
+Z_STS_IDX_CURRENT_MODE = 15

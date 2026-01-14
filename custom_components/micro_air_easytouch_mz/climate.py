@@ -237,7 +237,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             return HVACAction.FAN
         elif current_mode in ["cool", "cool_on"]:
             return HVACAction.COOLING
-        elif current_mode in ["heat", "heat_on"]:
+        elif current_mode in ["heat", "heat_pump"]:
             return HVACAction.HEATING
         elif current_mode == "dry":
             return HVACAction.DRYING
@@ -256,22 +256,54 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
     @property
     def fan_mode(self) -> str | None:
-        """Return the current fan mode as a standard Home Assistant name."""
-        if self.hvac_mode == HVACMode.FAN_ONLY:
+        """Return the current fan mode as a standard Home Assistant name.
+
+        Prefer the device's reported current operating mode (`current_mode`) to
+        decide which fan slot (fan_only/cool/heat/auto) to use, since the
+        runtime mode may be more accurate than the chosen `mode_num`.
+        """
+        current_mode = self._state.get("current_mode")
+        # Determine which fan number to use based on current operating mode
+        if current_mode == "fan":
             fan_mode_num = self._state.get("fan_mode_num", 0)
-            mode = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
-        elif self.hvac_mode == HVACMode.COOL:
+            mode_key = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
+            source = "fan-only"
+        elif current_mode == "cool":
             fan_mode_num = self._state.get("cool_fan_mode_num", 128)
-            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-        elif self.hvac_mode == HVACMode.HEAT:
+            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+            source = "cool"
+        elif current_mode == "heat":
             fan_mode_num = self._state.get("heat_fan_mode_num", 128)
-            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-        elif self.hvac_mode == HVACMode.AUTO:
+            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+            source = "heat"
+        elif current_mode == "auto":
             fan_mode_num = self._state.get("auto_fan_mode_num", 128)
-            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+            source = "auto"
         else:
-            mode = "full auto"
-        return self._FAN_MODE_MAP.get(mode, "auto")
+            # Fallback to HVAC mode mapping if current_mode is missing
+            if self.hvac_mode == HVACMode.FAN_ONLY:
+                fan_mode_num = self._state.get("fan_mode_num", 0)
+                mode_key = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
+                source = "fan-only(fallback)"
+            elif self.hvac_mode == HVACMode.COOL:
+                fan_mode_num = self._state.get("cool_fan_mode_num", 128)
+                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+                source = "cool(fallback)"
+            elif self.hvac_mode == HVACMode.HEAT:
+                fan_mode_num = self._state.get("heat_fan_mode_num", 128)
+                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+                source = "heat(fallback)"
+            elif self.hvac_mode == HVACMode.AUTO:
+                fan_mode_num = self._state.get("auto_fan_mode_num", 128)
+                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+                source = "auto(fallback)"
+            else:
+                mode_key = "full auto"
+                source = "unknown"
+
+        _LOGGER.debug("Zone %s fan mapping: source=%s, raw=%s -> key=%s", self._zone, source, fan_mode_num, mode_key)
+        return self._FAN_MODE_MAP.get(mode_key, "auto")
 
     @property
     def fan_modes(self) -> list[str]:

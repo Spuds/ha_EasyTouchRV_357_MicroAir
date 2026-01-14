@@ -22,7 +22,28 @@ from home_assistant_bluetooth import BluetoothServiceInfo
 from sensor_state_data.enum import StrEnum
 
 from ..const import DOMAIN
-from .const import UUIDS, FAN_MODES_FULL, FAN_MODES_FAN_ONLY
+from .const import (
+    UUIDS,
+    FAN_MODES_FULL,
+    FAN_MODES_FAN_ONLY,
+    MODE_NUM_TO_NAME,
+    Z_STS_IDX_AUTO_HEAT_SP,
+    Z_STS_IDX_AUTO_COOL_SP,
+    Z_STS_IDX_COOL_SP,
+    Z_STS_IDX_HEAT_SP,
+    Z_STS_IDX_DRY_SP,
+    Z_STS_IDX_UNKNOWN_5,
+    Z_STS_IDX_FAN_ONLY_MODE,
+    Z_STS_IDX_COOL_FAN,
+    Z_STS_IDX_HEATPUMP_FAN,
+    Z_STS_IDX_AUTO_FAN,
+    Z_STS_IDX_MODE,
+    Z_STS_IDX_HEAT_FAN,
+    Z_STS_IDX_FACEPLATE_TEMP,
+    Z_STS_IDX_UNKNOWN_13,
+    Z_STS_IDX_UNKNOWN_14,
+    Z_STS_IDX_CURRENT_MODE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -241,8 +262,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return {'available_zones': [0], 'zones': {0: {}}}
             
         param = status.get('PRM', [])
-        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 11: "auto", 10: "auto"}
-        # Reuse module-level FAN_MODES_* constants to avoid duplication and ensure consistency
+        # Use centralized mapping for mode numeric -> name
+        modes = MODE_NUM_TO_NAME.copy()
         
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
@@ -266,18 +287,31 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 available_zones.append(zone_num)
                 
                 zone_status = {}
-                zone_status['autoHeat_sp'] = info[0]
-                zone_status['autoCool_sp'] = info[1]
-                zone_status['cool_sp'] = info[2]
-                zone_status['heat_sp'] = info[3]
-                zone_status['dry_sp'] = info[4]
-                zone_status['fan_mode_num'] = info[6]  # Fan setting in fan-only mode
-                zone_status['cool_fan_mode_num'] = info[7]  # Fan setting in cool mode
-                zone_status['auto_fan_mode_num'] = info[9]  # Fan setting in auto mode
-                zone_status['mode_num'] = info[10]
-                zone_status['heat_fan_mode_num'] = info[11]  # Fan setting in heat mode
-                zone_status['facePlateTemperature'] = info[12]
-                zone_status['current_mode_num'] = info[15] # Current operating mode when in AUTO mode
+                zone_status['autoHeat_sp'] = info[Z_STS_IDX_AUTO_HEAT_SP]
+                zone_status['autoCool_sp'] = info[Z_STS_IDX_AUTO_COOL_SP]
+                zone_status['cool_sp'] = info[Z_STS_IDX_COOL_SP]
+                zone_status['heat_sp'] = info[Z_STS_IDX_HEAT_SP]
+                zone_status['dry_sp'] = info[Z_STS_IDX_DRY_SP]
+                zone_status['fan_mode_num'] = info[Z_STS_IDX_FAN_ONLY_MODE]  # Fan setting in fan-only mode
+                zone_status['cool_fan_mode_num'] = info[Z_STS_IDX_COOL_FAN]  # Fan setting in cool mode
+                zone_status['auto_fan_mode_num'] = info[Z_STS_IDX_AUTO_FAN]  # Fan setting in auto mode
+                zone_status['mode_num'] = info[Z_STS_IDX_MODE]
+                # Choose heat fan slot depending on device mode: heat pump typically uses slot 8, furnace uses slot 11.
+                # If heat-pump slot reports 'full auto' (128) but the furnace slot contains a manual setting,
+                # prefer the manual (furnace) slot so the UI reflects the effective fan setting.
+                if zone_status['mode_num'] == 5:
+                    hp_fan = info[Z_STS_IDX_HEATPUMP_FAN]
+                    furnace_fan = info[Z_STS_IDX_HEAT_FAN]
+                    if hp_fan == 128 and furnace_fan != 128:
+                        zone_status['heat_fan_mode_num'] = furnace_fan
+                        zone_status['_heat_fan_slot_used'] = 'furnace_fallback'
+                    else:
+                        zone_status['heat_fan_mode_num'] = hp_fan
+                        zone_status['_heat_fan_slot_used'] = 'heatpump'
+                else:
+                    zone_status['heat_fan_mode_num'] = info[Z_STS_IDX_HEAT_FAN]
+                zone_status['facePlateTemperature'] = info[Z_STS_IDX_FACEPLATE_TEMP]
+                zone_status['current_mode_num'] = info[Z_STS_IDX_CURRENT_MODE] # Current operating mode when in AUTO mode
 
                 if 7 in param:
                     zone_status['off'] = True
@@ -285,7 +319,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     zone_status['on'] = True
 
                 # Map modes
-                # Only use current_mode_num when non-zero; zero indicates 'no specific current mode'.
+                # Only use current_mode_num when non-zero
                 if zone_status['current_mode_num'] in modes and zone_status['current_mode_num'] != 0:
                     zone_status['current_mode'] = modes[zone_status['current_mode_num']]
                 if zone_status['mode_num'] in modes:
@@ -305,19 +339,20 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 
                 # Store the raw fan mode numbers and their string representations
                 if current_mode == "fan":
-                    fan_num = info[6]
+                    fan_num = info[Z_STS_IDX_FAN_ONLY_MODE]
                     zone_status['fan_mode_num'] = fan_num
                     zone_status['fan_mode'] = FAN_MODES_FAN_ONLY.get(fan_num, "off")
                 elif current_mode == "cool":
-                    fan_num = info[7]
+                    fan_num = info[Z_STS_IDX_COOL_FAN]
                     zone_status['cool_fan_mode_num'] = fan_num
                     zone_status['cool_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "heat":
-                    fan_num = info[11]
+                    # Use the heat_fan_mode_num chosen earlier (may be HEATPUMP_FAN or HEAT_FAN)
+                    fan_num = zone_status.get('heat_fan_mode_num', info[Z_STS_IDX_HEAT_FAN])
                     zone_status['heat_fan_mode_num'] = fan_num
                     zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "auto":
-                    fan_num = info[9]
+                    fan_num = info[Z_STS_IDX_AUTO_FAN]
                     zone_status['auto_fan_mode_num'] = fan_num
                     zone_status['auto_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
 
