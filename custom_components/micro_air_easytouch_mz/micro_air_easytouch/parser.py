@@ -143,6 +143,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self.set_device_name(name)
         self.set_title(name)
 
+        # Remember last seen address so polling can resolve the BLE device on demand
+        try:
+            self._last_seen_address = service_info.address
+            _LOGGER.debug("Recorded last seen device address: %s", self._last_seen_address)
+        except Exception:
+            self._last_seen_address = None
+
         # Notify any subscribers that new data is available (advertisement-driven)
         self._notify_update()
 
@@ -598,28 +605,44 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             while True:
                 try:
                     if not self._ble_device:
-                        _LOGGER.debug("No BLE device known, skipping poll iteration")
-                        self._last_poll_success = False
-                    else:
-                        message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                        sent = await self.send_command(hass, self._ble_device, message)
-                        if sent:
-                            json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
-                            if json_payload:
-                                try:
-                                    payload_str = json_payload.decode('utf-8')
-                                except Exception:
-                                    payload_str = repr(json_payload)
-                                _LOGGER.debug("Poll raw payload: %s", payload_str)
-                                self.decrypt(payload_str)
-                                self._last_poll_success = True
-                                self._last_poll_time = time.time()
-                            else:
-                                _LOGGER.debug("Poll read returned no payload")
-                                self._last_poll_success = False
-                        else:
-                            _LOGGER.debug("Poll send_command failed")
+                        # Try to resolve BLE device from last seen address (set by advertisements or probes)
+                        if getattr(self, '_last_seen_address', None):
+                            try:
+                                from homeassistant.components.bluetooth import async_ble_device_from_address as _resolver
+                                resolved = _resolver(hass, self._last_seen_address)
+                                if resolved:
+                                    self._ble_device = resolved
+                                    _LOGGER.info("Resolved BLE device for polling: %s", self._last_seen_address)
+                                else:
+                                    _LOGGER.debug("Could not resolve BLE device for address %s", self._last_seen_address)
+                            except Exception as e:
+                                _LOGGER.debug("Error resolving BLE device: %s", str(e))
+
+                        if not self._ble_device:
+                            _LOGGER.debug("No BLE device known, skipping poll iteration")
                             self._last_poll_success = False
+                            await asyncio.sleep(self._poll_interval)
+                            continue
+
+                    message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                    sent = await self.send_command(hass, self._ble_device, message)
+                    if sent:
+                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
+                        if json_payload:
+                            try:
+                                payload_str = json_payload.decode('utf-8')
+                            except Exception:
+                                payload_str = repr(json_payload)
+                            _LOGGER.debug("Poll raw payload: %s", payload_str)
+                            self.decrypt(payload_str)
+                            self._last_poll_success = True
+                            self._last_poll_time = time.time()
+                        else:
+                            _LOGGER.debug("Poll read returned no payload")
+                            self._last_poll_success = False
+                    else:
+                        _LOGGER.debug("Poll send_command failed")
+                        self._last_poll_success = False
                 except Exception as e:
                     _LOGGER.debug("Error during poll iteration: %s", str(e))
                     self._last_poll_success = False
