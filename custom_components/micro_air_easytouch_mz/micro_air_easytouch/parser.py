@@ -339,12 +339,34 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         if 0 in zone_data:
             hr_status.update(zone_data[0])
 
-        # Update internal device state and notify subscribers
+        # Compare against previous state and log mode changes per zone for easier debugging
         try:
+            prev = self._device_state or {}
+            diffs = []
+            for z, new_zone in hr_status.get('zones', {}).items():
+                try:
+                    z = int(z)
+                except Exception:
+                    pass
+                old_zone = (prev.get('zones') or {}).get(z, {})
+                old_mode = old_zone.get('mode_num')
+                new_mode = new_zone.get('mode_num')
+                old_current = old_zone.get('current_mode_num')
+                new_current = new_zone.get('current_mode_num')
+                if old_mode != new_mode or old_current != new_current:
+                    diffs.append({
+                        'zone': z,
+                        'mode_num': (old_mode, new_mode),
+                        'current_mode_num': (old_current, new_current),
+                    })
+            if diffs:
+                _LOGGER.debug("Detected mode/current_mode changes: %s", diffs)
+
+            # Update internal device state and notify subscribers
             self._device_state = hr_status
             self._notify_update()
-        except Exception:
-            _LOGGER.debug("Failed to notify subscribers of decrypted state")
+        except Exception as e:
+            _LOGGER.debug("Failed to notify subscribers of decrypted state: %s", str(e))
 
         return hr_status
 

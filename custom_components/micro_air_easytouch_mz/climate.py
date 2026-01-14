@@ -465,26 +465,48 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         _LOGGER.debug("Updating state for zone %s", self._zone)
         await self._async_fetch_initial_state()
 
-async def async_added_to_hass(self) -> None:
+    async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         # perform initial fetch
         await self._async_fetch_initial_state()
         # subscribe to parser updates (store unsubscribe)
         self._unsub_updates = self._data.async_subscribe_updates(self._handle_update)
 
-async def async_will_remove_from_hass(self) -> None:
-    await super().async_will_remove_from_hass()
+    async def async_will_remove_from_hass(self) -> None:
+        await super().async_will_remove_from_hass()
       
-    # Unsubscribe from updates
-    if self._unsub_updates:
-        self._unsub_updates()
-        self._unsub_updates = None
+        # Unsubscribe from updates
+        if self._unsub_updates:
+            self._unsub_updates()
+            self._unsub_updates = None
 
-def _handle_update(self, full_state) -> None:
-    # Update self._state from parser (guard for missing data)
-    new_zone_state = full_state.get("zones", {}).get(self._zone) if full_state else None
-    if not new_zone_state:
-        return
-        
-    self._state = new_zone_state
-    self.async_write_ha_state()
+    def _handle_update(self, full_state) -> None:
+        # Update self._state from parser (guard for missing data)
+        new_zone_state = full_state.get("zones", {}).get(self._zone) if full_state is not None else None
+        if new_zone_state is None:
+            _LOGGER.debug("No state for zone %s in update; full_state present: %s", self._zone, bool(full_state))
+            return
+            
+        prev_state = dict(self._state) if self._state else {}
+        prev_mode = prev_state.get("mode_num")
+        prev_hvac = EASY_MODE_TO_HA_MODE.get(prev_mode, HVACMode.OFF) if prev_mode is not None else None
+
+        self._state = new_zone_state
+
+        new_mode = self._state.get("mode_num")
+        new_hvac = EASY_MODE_TO_HA_MODE.get(new_mode, HVACMode.OFF)
+
+        if prev_mode != new_mode:
+            _LOGGER.debug(
+                "Zone %s updated: mode_num %s -> %s, hvac %s -> %s",
+                self._zone,
+                prev_mode,
+                new_mode,
+                prev_hvac,
+                new_hvac,
+            )
+
+        try:
+            self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.debug("Error writing HA state for zone %s: %s", self._zone, str(e))
