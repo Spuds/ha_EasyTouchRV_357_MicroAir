@@ -5,6 +5,27 @@ import logging
 import asyncio
 import time
 import json
+import base64
+
+
+def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
+    """Return a short printable preview and a base64-encoded full payload."""
+    try:
+        if isinstance(payload, (bytes, bytearray)):
+            data_bytes = bytes(payload)
+        else:
+            # fallback: convert string to bytes
+            data_bytes = str(payload).encode('utf-8', errors='replace')
+        try:
+            text = data_bytes.decode('utf-8', errors='replace')
+        except Exception:
+            text = repr(data_bytes)
+        # Use repr for preview so non-printable characters are visible (e.g., NUL)
+        preview = repr(text)[:200]
+        full_b64 = base64.b64encode(data_bytes).decode('ascii')
+        return preview, full_b64
+    except Exception:
+        return ('', '')
 
 # Bluetooth-related imports for device communication
 from bleak import BLEDevice
@@ -486,8 +507,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                         payload_str = payload.decode('utf-8')
                     except Exception:
                         payload_str = repr(payload)
-                    _LOGGER.debug("Probe raw payload: %s", payload_str)
-                    decrypted = self.decrypt(payload_str)
+                    preview, full_b64 = _format_payload_for_log(payload)
+                    _LOGGER.debug("Probe raw payload preview: %s (len=%d)", preview, len(payload))
+                    _LOGGER.debug("Probe raw payload (base64): %s", full_b64)
+
+                    decrypted = self.decrypt(payload)
                     zones = decrypted.get('available_zones', [0])
                     _LOGGER.info("Probe detected %d zones: %s", len(zones), zones)
                     return zones
@@ -570,12 +594,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                         if sent:
                             json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
                             if json_payload:
-                                try:
-                                    payload_str = json_payload.decode('utf-8')
-                                except Exception:
-                                    payload_str = repr(json_payload)
-                                _LOGGER.debug("Poll raw payload: %s", payload_str)
-                                self.decrypt(payload_str)
+                                preview, full_b64 = _format_payload_for_log(json_payload)
+                                _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
+                                _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
+                                # Pass bytes directly to decrypt (it accepts bytes or str)
+                                self.decrypt(json_payload)
                                 self._last_poll_success = True
                                 self._last_poll_time = time.time()
                             else:
