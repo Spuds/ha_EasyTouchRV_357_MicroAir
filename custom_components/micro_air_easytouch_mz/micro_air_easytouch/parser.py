@@ -100,6 +100,9 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._last_poll_success: bool = False
         self._last_poll_time: float | None = None
 
+        # Quick poll (burst) task for accelerated probing when changes are suspected
+        self._quick_poll_task: asyncio.Task | None = None
+
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
         device_delays = hass.data.setdefault(DOMAIN, {}).setdefault('device_delays', {}).get(address, {})
@@ -505,6 +508,55 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 pass
 
         return [0]
+
+    async def request_quick_poll(self, hass, ble_device: BLEDevice, interval: float = 5.0, repeats: int = 12) -> bool:
+        """Request a short burst of frequent polls to detect external or phone-driven changes.
+
+        This schedules a background task that will run `repeats` iterations
+        at `interval` seconds apart. If a quick poll is already running,
+        this is a no-op and returns True.
+        """
+        if self._quick_poll_task and not self._quick_poll_task.done():
+            _LOGGER.debug("Quick poll already in progress")
+            return True
+
+        async def _runner():
+            _LOGGER.info("Starting quick poll burst: %d x %.1fs", repeats, interval)
+            try:
+                for i in range(repeats):
+                    try:
+                        async with self._client_lock:
+                            message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                            sent = await self.send_command(hass, ble_device, message)
+                            if sent:
+                                json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
+                                if json_payload:
+                                    try:
+                                        payload_str = json_payload.decode('utf-8')
+                                    except Exception:
+                                        payload_str = repr(json_payload)
+                                    _LOGGER.debug("Quick poll raw payload: %s", payload_str)
+                                    self.decrypt(payload_str)
+                                    self._last_poll_success = True
+                                    self._last_poll_time = time.time()
+                                else:
+                                    _LOGGER.debug("Quick poll read returned no payload")
+                                    self._last_poll_success = False
+                            else:
+                                _LOGGER.debug("Quick poll send failed")
+                                self._last_poll_success = False
+                    except Exception as e:
+                        _LOGGER.debug("Error during quick poll iteration: %s", str(e))
+                        self._last_poll_success = False
+                    await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                _LOGGER.info("Quick poll burst cancelled")
+                raise
+            finally:
+                _LOGGER.info("Quick poll burst finished")
+
+        self._quick_poll_task = asyncio.create_task(_runner())
+        return True
 
     def start_polling(self, hass, startup_delay: float = 1.0) -> None:
         """Start background polling loop (non-blocking) with a configurable startup delay.
