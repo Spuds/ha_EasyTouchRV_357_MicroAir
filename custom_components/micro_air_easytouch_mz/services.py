@@ -14,6 +14,7 @@ from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def _normalize(s: str) -> str:
     """Normalize identifiers for loose matching (lowercase, strip separators)."""
     return str(s).lower().replace(':', '').replace('-', '').replace('.', '')
@@ -139,16 +140,16 @@ async def async_register_services(hass: HomeAssistant) -> None:
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
         ble_address = address or config_entry.unique_id
         ble_device = async_ble_device_from_address(hass, ble_address)
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            return
 
         try:
-            _LOGGER.info("Invoking quick poll for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
-            # Pass the address string (ble_address) rather than BLEDevice object so request_quick_poll
-            # can fall back to establishing a short-lived connection when needed.
-            success = await device_data.request_quick_poll(hass, ble_address, interval=interval, repeats=repeats)
+            success = await device_data.request_quick_poll(hass, ble_device, interval=interval, repeats=repeats)
             if success:
-                _LOGGER.info("Quick poll scheduled for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
+                _LOGGER.info("Quick poll requested for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
             else:
-                _LOGGER.warning("Quick poll request was not started for device %s (already running or failed)", ble_address)
+                _LOGGER.error("Quick poll request failed for device %s", ble_address)
         except Exception as e:
             _LOGGER.error("Error requesting quick poll for device %s: %s", ble_address, str(e))
 

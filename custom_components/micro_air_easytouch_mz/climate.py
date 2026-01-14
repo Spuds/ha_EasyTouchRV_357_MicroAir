@@ -159,15 +159,8 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         """Return the icon to use for the current fan mode."""
         return self._FAN_MODE_ICONS.get(self.fan_mode, "mdi:fan")
 
-    async def _async_fetch_initial_state(self, delay: float = 0.0) -> None:
-        """Fetch the initial state from the device.
-
-        Optional `delay` allows callers to schedule a short wait (seconds) before
-        probing the device. This helps avoid racing with a recent Change command
-        that may temporarily disrupt the GATT stack on some devices.
-        """
-        if delay and delay > 0:
-            await asyncio.sleep(delay)
+    async def _async_fetch_initial_state(self) -> None:
+        """Fetch the initial state from the device."""
         ble_device = async_ble_device_from_address(self.hass, self._mac_address)
         if not ble_device:
             _LOGGER.error("Could not find BLE device: %s", self._mac_address)
@@ -328,8 +321,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic temperature update: %s", str(e))
                 try:
-                    # Give the device a brief moment to settle after a Change
-                    asyncio.create_task(self._async_fetch_initial_state(delay=0.3))
+                    asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
                     pass
             else:
@@ -370,8 +362,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
                 # Verify by fetching the real state in background
                 try:
-                    # Give the device a brief moment to settle after a Change
-                    asyncio.create_task(self._async_fetch_initial_state(delay=0.3))
+                    asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
                     pass
             else:
@@ -444,8 +435,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan update: %s", str(e))
                 try:
-                    # Give the device a brief moment to settle after a Change
-                    asyncio.create_task(self._async_fetch_initial_state(delay=0.3))
+                    asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
                     pass
             else:

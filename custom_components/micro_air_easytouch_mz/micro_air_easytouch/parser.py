@@ -100,9 +100,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._last_poll_success: bool = False
         self._last_poll_time: float | None = None
 
-        # Quick poll (burst) task for accelerated probing when changes are suspected
-        self._quick_poll_task: asyncio.Task | None = None
-
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
         device_delays = hass.data.setdefault(DOMAIN, {}).setdefault('device_delays', {}).get(address, {})
@@ -142,13 +139,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         name = f"{service_info.name} {short_address(service_info.address)}"
         self.set_device_name(name)
         self.set_title(name)
-
-        # Remember last seen address so polling can resolve the BLE device on demand
-        try:
-            self._last_seen_address = service_info.address
-            _LOGGER.debug("Recorded last seen device address: %s", self._last_seen_address)
-        except Exception:
-            self._last_seen_address = None
 
         # Notify any subscribers that new data is available (advertisement-driven)
         self._notify_update()
@@ -193,7 +183,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return {'available_zones': [0], 'zones': {0: {}}}
             
         param = status.get('PRM', [])
-        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 8: "auto", 10: "auto", 11: "auto"}
+        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 11: "auto", 10: "auto"}
         fan_modes_full = {0: "off", 1: "manualL", 2: "manualH", 65: "cycledL", 66: "cycledH", 128: "full auto"}
         fan_modes_fan_only = {0: "off", 1: "low", 2: "high"}
         
@@ -416,43 +406,42 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         return None
 
     async def reboot_device(self, hass, ble_device: BLEDevice) -> bool:
-        """Reboot the device by sending reset command in a serialized manner."""
-        async with self._client_lock:
-            try:
-                self._ble_device = ble_device
-                self._client = await self._connect_to_device(ble_device)
-                if not self._client or not self._client.is_connected:
-                    _LOGGER.error("Failed to connect for reboot")
-                    return False
-                if not await self.authenticate(self._password):
-                    _LOGGER.error("Failed to authenticate for reboot")
-                    return False
-                write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
-                if write_delay > 0:
-                    await asyncio.sleep(write_delay)
-                reset_cmd = {"Type": "Change", "Changes": {"zone": 0, "reset": " OK"}}
-                cmd_bytes = json.dumps(reset_cmd).encode()
-                try:
-                    await self._client.write_gatt_char(UUIDS["jsonCmd"], cmd_bytes, response=True)
-                    _LOGGER.info("Reboot command sent successfully")
-                    return True
-                except BleakError as e:
-                    if "Error" in str(e) and "133" in str(e):
-                        _LOGGER.info("Device is rebooting as expected")
-                        return True
-                    _LOGGER.error("Failed to send reboot command: %s", str(e))
-                    self._increase_operation_delay(hass, ble_device.address, 'write')
-                    return False
-            except Exception as e:
-                _LOGGER.error("Error during reboot: %s", str(e))
+        """Reboot the device by sending reset command."""
+        try:
+            self._ble_device = ble_device
+            self._client = await self._connect_to_device(ble_device)
+            if not self._client or not self._client.is_connected:
+                _LOGGER.error("Failed to connect for reboot")
                 return False
-            finally:
-                try:
-                    if self._client and self._client.is_connected:
-                        await self._client.disconnect()
-                except Exception as e:
-                    _LOGGER.debug("Error disconnecting after reboot: %s", str(e))
-                self._client = None
+            if not await self.authenticate(self._password):
+                _LOGGER.error("Failed to authenticate for reboot")
+                return False
+            write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
+            if write_delay > 0:
+                await asyncio.sleep(write_delay)
+            reset_cmd = {"Type": "Change", "Changes": {"zone": 0, "reset": " OK"}}
+            cmd_bytes = json.dumps(reset_cmd).encode()
+            try:
+                await self._client.write_gatt_char(UUIDS["jsonCmd"], cmd_bytes, response=True)
+                _LOGGER.info("Reboot command sent successfully")
+                return True
+            except BleakError as e:
+                if "Error" in str(e) and "133" in str(e):
+                    _LOGGER.info("Device is rebooting as expected")
+                    return True
+                _LOGGER.error("Failed to send reboot command: %s", str(e))
+                self._increase_operation_delay(hass, ble_device.address, 'write')
+                return False
+        except Exception as e:
+            _LOGGER.error("Error during reboot: %s", str(e))
+            return False
+        finally:
+            try:
+                if self._client and self._client.is_connected:
+                    await self._client.disconnect()
+            except Exception as e:
+                _LOGGER.debug("Error disconnecting after reboot: %s", str(e))
+            self._client = None
             self._ble_device = None
 
     async def get_available_zones(self, hass, ble_device: BLEDevice) -> list[int]:
@@ -517,114 +506,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         return [0]
 
-    async def request_quick_poll(self, hass, ble_device_or_address, interval: float = 5.0, repeats: int = 12) -> bool:
-        """Request a short burst of frequent polls to detect external or phone-driven changes.
-
-        If `ble_device_or_address` is a BLEDevice, it will be used directly. If it's a string
-        (MAC address), this function will create a short-lived connection for each poll
-        iteration so polling works even when no BLEDevice object is available in the system.
-        """
-        if self._quick_poll_task and not self._quick_poll_task.done():
-            _LOGGER.info("Quick poll already in progress; skipping new request")
-            return True
-
-        async def _runner():
-            _LOGGER.info("Starting quick poll burst: %d x %.1fs", repeats, interval)
-            try:
-                for i in range(repeats):
-                    try:
-                        # Use client lock to protect BLE operations
-                        async with self._client_lock:
-                            if isinstance(ble_device_or_address, str):
-                                # Address string path: establish short-lived connection
-                                address = ble_device_or_address
-                                try:
-                                    client = await establish_connection(
-                                        BleakClientWithServiceCache,
-                                        None,
-                                        address,
-                                        timeout=10.0,
-                                    )
-                                    if not client or not client.is_connected:
-                                        _LOGGER.debug("Quick poll short-lived connect failed for %s", address)
-                                    else:
-                                        # Optional lightweight auth
-                                        if self._password:
-                                            try:
-                                                await client.write_gatt_char(UUIDS["passwordCmd"], self._password.encode('utf-8'), response=True)
-                                            except Exception:
-                                                pass
-                                        try:
-                                            cmd = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                                            await client.write_gatt_char(UUIDS["jsonCmd"], json.dumps(cmd).encode('utf-8'), response=True)
-                                            await asyncio.sleep(0.2)
-                                            payload = await client.read_gatt_char(UUIDS["jsonReturn"])
-                                            if payload:
-                                                try:
-                                                    payload_str = payload.decode('utf-8')
-                                                except Exception:
-                                                    payload_str = repr(payload)
-                                                _LOGGER.debug("Quick poll (addr) raw payload: %s", payload_str)
-                                                self.decrypt(payload_str)
-                                                self._last_poll_success = True
-                                                self._last_poll_time = time.time()
-                                            else:
-                                                _LOGGER.debug("Quick poll (addr) read returned no payload")
-                                                self._last_poll_success = False
-                                        except Exception as e:
-                                            _LOGGER.debug("Quick poll (addr) read/write failed: %s", str(e))
-                                            self._last_poll_success = False
-                                        try:
-                                            if client and client.is_connected:
-                                                await client.disconnect()
-                                        except Exception:
-                                            pass
-                                except Exception as e:
-                                    _LOGGER.debug("Quick poll connection error for %s: %s", address, str(e))
-                                    self._last_poll_success = False
-                            else:
-                                # BLEDevice path: use existing send/read helpers
-                                message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                                sent = await self.send_command(hass, ble_device_or_address, message)
-                                if sent:
-                                    json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device_or_address)
-                                    if json_payload:
-                                        try:
-                                            payload_str = json_payload.decode('utf-8')
-                                        except Exception:
-                                            payload_str = repr(json_payload)
-                                        _LOGGER.debug("Quick poll raw payload: %s", payload_str)
-                                        self.decrypt(payload_str)
-                                        self._last_poll_success = True
-                                        self._last_poll_time = time.time()
-                                    else:
-                                        _LOGGER.debug("Quick poll read returned no payload")
-                                        self._last_poll_success = False
-                                else:
-                                    _LOGGER.debug("Quick poll send failed")
-                                    self._last_poll_success = False
-                    except Exception as e:
-                        _LOGGER.debug("Error during quick poll iteration: %s", str(e))
-                        self._last_poll_success = False
-                    await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                _LOGGER.info("Quick poll burst cancelled")
-                raise
-            finally:
-                _LOGGER.info("Quick poll burst finished")
-
-        # For immediate verification (single iteration), run synchronously so callers
-        # can observe results immediately in tests or when immediate feedback is desired.
-        if repeats == 1:
-            try:
-                await _runner()
-            except asyncio.CancelledError:
-                _LOGGER.info("Quick poll runner cancelled during synchronous execution")
-            return True
-
-        self._quick_poll_task = asyncio.create_task(_runner())
-        return True
-
     def start_polling(self, hass, startup_delay: float = 1.0) -> None:
         """Start background polling loop (non-blocking) with a configurable startup delay.
 
@@ -665,44 +546,28 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             while True:
                 try:
                     if not self._ble_device:
-                        # Try to resolve BLE device from last seen address (set by advertisements or probes)
-                        if getattr(self, '_last_seen_address', None):
-                            try:
-                                from homeassistant.components.bluetooth import async_ble_device_from_address as _resolver
-                                resolved = _resolver(hass, self._last_seen_address)
-                                if resolved:
-                                    self._ble_device = resolved
-                                    _LOGGER.info("Resolved BLE device for polling: %s", self._last_seen_address)
-                                else:
-                                    _LOGGER.debug("Could not resolve BLE device for address %s", self._last_seen_address)
-                            except Exception as e:
-                                _LOGGER.debug("Error resolving BLE device: %s", str(e))
-
-                        if not self._ble_device:
-                            _LOGGER.debug("No BLE device known, skipping poll iteration")
-                            self._last_poll_success = False
-                            await asyncio.sleep(self._poll_interval)
-                            continue
-
-                    message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                    sent = await self.send_command(hass, self._ble_device, message)
-                    if sent:
-                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
-                        if json_payload:
-                            try:
-                                payload_str = json_payload.decode('utf-8')
-                            except Exception:
-                                payload_str = repr(json_payload)
-                            _LOGGER.debug("Poll raw payload: %s", payload_str)
-                            self.decrypt(payload_str)
-                            self._last_poll_success = True
-                            self._last_poll_time = time.time()
-                        else:
-                            _LOGGER.debug("Poll read returned no payload")
-                            self._last_poll_success = False
-                    else:
-                        _LOGGER.debug("Poll send_command failed")
+                        _LOGGER.debug("No BLE device known, skipping poll iteration")
                         self._last_poll_success = False
+                    else:
+                        message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                        sent = await self.send_command(hass, self._ble_device, message)
+                        if sent:
+                            json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
+                            if json_payload:
+                                try:
+                                    payload_str = json_payload.decode('utf-8')
+                                except Exception:
+                                    payload_str = repr(json_payload)
+                                _LOGGER.debug("Poll raw payload: %s", payload_str)
+                                self.decrypt(payload_str)
+                                self._last_poll_success = True
+                                self._last_poll_time = time.time()
+                            else:
+                                _LOGGER.debug("Poll read returned no payload")
+                                self._last_poll_success = False
+                        else:
+                            _LOGGER.debug("Poll send_command failed")
+                            self._last_poll_success = False
                 except Exception as e:
                     _LOGGER.debug("Error during poll iteration: %s", str(e))
                     self._last_poll_success = False
@@ -712,25 +577,23 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             raise
             
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Send command to device in a serialized manner to avoid BLE races."""
-        async with self._client_lock:
-            try:
+        """Send command to device."""
+        try:
+            if not self._client or not self._client.is_connected:
+                self._client = await self._connect_to_device(ble_device)
                 if not self._client or not self._client.is_connected:
-                    self._client = await self._connect_to_device(ble_device)
-                    if not self._client or not self._client.is_connected:
-                        return False
-                    if not await self.authenticate(self._password):
-                        return False
-                command_bytes = json.dumps(command).encode()
-                result = await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
-                return result
+                    return False
+                if not await self.authenticate(self._password):
+                    return False
+            command_bytes = json.dumps(command).encode()
+            return await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
+        except Exception as e:
+            _LOGGER.error("Error sending command: %s", str(e))
+            return False
+        finally:
+            try:
+                if self._client and self._client.is_connected:
+                    await self._client.disconnect()
             except Exception as e:
-                _LOGGER.error("Error sending command: %s", str(e))
-                return False
-            finally:
-                try:
-                    if self._client and self._client.is_connected:
-                        await self._client.disconnect()
-                except Exception as e:
-                    _LOGGER.debug("Error disconnecting: %s", str(e))
-                self._client = None
+                _LOGGER.debug("Error disconnecting: %s", str(e))
+            self._client = None
