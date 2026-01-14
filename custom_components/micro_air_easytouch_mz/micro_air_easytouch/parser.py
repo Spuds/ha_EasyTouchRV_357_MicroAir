@@ -203,10 +203,23 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         return _unsubscribe
 
     def _notify_update(self) -> None:
-        """Invoke all registered update listeners and handle errors."""
+        """Invoke all registered update listeners and provide the latest state.
+
+        For backward compatibility support both zero-argument callbacks and
+        single-argument callbacks that accept the full device state.
+        """
         for callback in list(self._update_listeners):
             try:
-                callback()
+                # Prefer calling with the current device state so subscribers that
+                # expect the state can receive it directly.
+                callback(self._device_state)
+            except TypeError:
+                # Callback likely expects no arguments; fall back to calling
+                # without arguments for backward compatibility.
+                try:
+                    callback()
+                except Exception as e:
+                    _LOGGER.debug("Error in update listener (no-arg fallback): %s", str(e))
             except Exception as e:
                 _LOGGER.debug("Error in update listener: %s", str(e))
 
