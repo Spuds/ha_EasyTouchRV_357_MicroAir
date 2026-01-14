@@ -12,9 +12,9 @@ UUIDS = {
 # Map EasyTouch modes to Home Assistant HVAC modes
 HA_MODE_TO_EASY_MODE = {
     HVACMode.OFF: 0,
-    HVACMode.HEAT: 4,
+    HVACMode.HEAT: 5,
     HVACMode.COOL: 2,
-    HVACMode.AUTO: 10,  # Use 10 for AUTO pairing with heatpump
+    HVACMode.AUTO: 8, # Try 8 generic heat/cool .. Use 10 for AUTO pairing with heatpump
     HVACMode.FAN_ONLY: 1,
     HVACMode.DRY: 6,
 }
@@ -22,10 +22,10 @@ HA_MODE_TO_EASY_MODE = {
 # Reverse mapping for reported codes -> HA modes. Add extra reported-only mappings.
 EASY_MODE_TO_HA_MODE = {v: k for k, v in HA_MODE_TO_EASY_MODE.items()}
 
-# Device may report mode 5 for heat (heatpump) and 8/11 for auto — map them to HA modes for status
-EASY_MODE_TO_HA_MODE[5] = HVACMode.HEAT # heatpump
+# Device may report mode 4 for heat (furnace) and 8/11 for auto — map them to HA modes for status
+EASY_MODE_TO_HA_MODE[4] = HVACMode.HEAT # furnace
 EASY_MODE_TO_HA_MODE[11] = HVACMode.AUTO # auto (AC/Furnace)
-EASY_MODE_TO_HA_MODE[8] = HVACMode.AUTO # auto (generic)
+EASY_MODE_TO_HA_MODE[10] = HVACMode.AUTO # auto (AC/HeatPump)
 
 # Fan mode mappings (general and mode-specific)
 FAN_MODES_FULL = {
