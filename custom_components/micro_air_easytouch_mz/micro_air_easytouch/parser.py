@@ -517,7 +517,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         this is a no-op and returns True.
         """
         if self._quick_poll_task and not self._quick_poll_task.done():
-            _LOGGER.debug("Quick poll already in progress")
+            _LOGGER.info("Quick poll already in progress; skipping new request")
             return True
 
         async def _runner():

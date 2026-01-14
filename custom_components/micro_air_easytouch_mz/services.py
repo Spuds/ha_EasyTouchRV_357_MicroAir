@@ -144,11 +144,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             return
 
         try:
+            _LOGGER.info("Invoking quick poll for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
             success = await device_data.request_quick_poll(hass, ble_device, interval=interval, repeats=repeats)
             if success:
-                _LOGGER.info("Quick poll requested for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
+                _LOGGER.info("Quick poll scheduled for device %s (interval=%.2f, repeats=%d)", ble_address, interval, repeats)
             else:
-                _LOGGER.error("Quick poll request failed for device %s", ble_address)
+                _LOGGER.warning("Quick poll request was not started for device %s (already running or failed)", ble_address)
         except Exception as e:
             _LOGGER.error("Error requesting quick poll for device %s: %s", ble_address, str(e))
 
