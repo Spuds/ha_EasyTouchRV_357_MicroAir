@@ -237,7 +237,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             return HVACAction.FAN
         elif current_mode in ["cool", "cool_on"]:
             return HVACAction.COOLING
-        elif current_mode in ["heat", "heat_pump"]:
+        elif current_mode in ["heat", "heat_on"]:
             return HVACAction.HEATING
         elif current_mode == "dry":
             return HVACAction.DRYING
@@ -256,54 +256,22 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
     @property
     def fan_mode(self) -> str | None:
-        """Return the current fan mode as a standard Home Assistant name.
-
-        Prefer the device's reported current operating mode (`current_mode`) to
-        decide which fan slot (fan_only/cool/heat/auto) to use, since the
-        runtime mode may be more accurate than the chosen `mode_num`.
-        """
-        current_mode = self._state.get("current_mode")
-        # Determine which fan number to use based on current operating mode
-        if current_mode == "fan":
+        """Return the current fan mode as a standard Home Assistant name."""
+        if self.hvac_mode == HVACMode.FAN_ONLY:
             fan_mode_num = self._state.get("fan_mode_num", 0)
-            mode_key = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
-            source = "fan-only"
-        elif current_mode == "cool":
+            mode = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
+        elif self.hvac_mode == HVACMode.COOL:
             fan_mode_num = self._state.get("cool_fan_mode_num", 128)
-            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-            source = "cool"
-        elif current_mode == "heat":
+            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+        elif self.hvac_mode == HVACMode.HEAT:
             fan_mode_num = self._state.get("heat_fan_mode_num", 128)
-            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-            source = "heat"
-        elif current_mode == "auto":
+            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
+        elif self.hvac_mode == HVACMode.AUTO:
             fan_mode_num = self._state.get("auto_fan_mode_num", 128)
-            mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-            source = "auto"
+            mode = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
         else:
-            # Fallback to HVAC mode mapping if current_mode is missing
-            if self.hvac_mode == HVACMode.FAN_ONLY:
-                fan_mode_num = self._state.get("fan_mode_num", 0)
-                mode_key = FAN_MODES_FAN_ONLY.get(fan_mode_num, "off")
-                source = "fan-only(fallback)"
-            elif self.hvac_mode == HVACMode.COOL:
-                fan_mode_num = self._state.get("cool_fan_mode_num", 128)
-                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-                source = "cool(fallback)"
-            elif self.hvac_mode == HVACMode.HEAT:
-                fan_mode_num = self._state.get("heat_fan_mode_num", 128)
-                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-                source = "heat(fallback)"
-            elif self.hvac_mode == HVACMode.AUTO:
-                fan_mode_num = self._state.get("auto_fan_mode_num", 128)
-                mode_key = FAN_MODES_REVERSE.get(fan_mode_num, "full auto")
-                source = "auto(fallback)"
-            else:
-                mode_key = "full auto"
-                source = "unknown"
-
-        _LOGGER.debug("Zone %s fan mapping: source=%s, raw=%s -> key=%s", self._zone, source, fan_mode_num, mode_key)
-        return self._FAN_MODE_MAP.get(mode_key, "auto")
+            mode = "full auto"
+        return self._FAN_MODE_MAP.get(mode, "auto")
 
     @property
     def fan_modes(self) -> list[str]:
@@ -353,11 +321,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic temperature update: %s", str(e))
                 try:
-                    # Trigger a quick poll burst to verify the change promptly
-                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
-                except Exception:
-                    pass
-                try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
                     pass
@@ -396,12 +359,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     self.async_write_ha_state()
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic hvac_mode update: %s", str(e))
-
-                # Trigger a quick poll burst for fast verification and verify by fetching the real state in background
-                try:
-                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
-                except Exception:
-                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
@@ -436,10 +393,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     self.async_write_ha_state()
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan-only update: %s", str(e))
-                try:
-                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
-                except Exception:
-                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:
@@ -479,10 +432,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     self.async_write_ha_state()
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan update: %s", str(e))
-                try:
-                    asyncio.create_task(self._data.request_quick_poll(self.hass, ble_device, interval=0.5, repeats=3))
-                except Exception:
-                    pass
                 try:
                     asyncio.create_task(self._async_fetch_initial_state())
                 except Exception:

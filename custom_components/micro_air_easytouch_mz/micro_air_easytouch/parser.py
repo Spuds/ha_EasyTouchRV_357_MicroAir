@@ -22,31 +22,9 @@ from home_assistant_bluetooth import BluetoothServiceInfo
 from sensor_state_data.enum import StrEnum
 
 from ..const import DOMAIN
-from .const import (
-    UUIDS,
-    FAN_MODES_FULL,
-    FAN_MODES_FAN_ONLY,
-    MODE_NUM_TO_NAME,
-    Z_STS_IDX_AUTO_HEAT_SP,
-    Z_STS_IDX_AUTO_COOL_SP,
-    Z_STS_IDX_COOL_SP,
-    Z_STS_IDX_HEAT_SP,
-    Z_STS_IDX_DRY_SP,
-    Z_STS_IDX_UNKNOWN_5,
-    Z_STS_IDX_FAN_ONLY_MODE,
-    Z_STS_IDX_COOL_FAN,
-    Z_STS_IDX_HEATPUMP_FAN,
-    Z_STS_IDX_AUTO_FAN,
-    Z_STS_IDX_MODE,
-    Z_STS_IDX_HEAT_FAN,
-    Z_STS_IDX_FACEPLATE_TEMP,
-    Z_STS_IDX_UNKNOWN_13,
-    Z_STS_IDX_UNKNOWN_14,
-    Z_STS_IDX_CURRENT_MODE,
-)
+from .const import UUIDS, FAN_MODES_FULL, FAN_MODES_FAN_ONLY
 
 _LOGGER = logging.getLogger(__name__)
-
 
 def retry_authentication(retries=3, delay=1):
     """Custom retry decorator for authentication attempts."""
@@ -262,8 +240,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             return {'available_zones': [0], 'zones': {0: {}}}
             
         param = status.get('PRM', [])
-        # Use centralized mapping for mode numeric -> name
-        modes = MODE_NUM_TO_NAME.copy()
+        modes = {0: "off", 5: "heat_on", 4: "heat", 3: "cool_on", 2: "cool", 1: "fan", 8: "auto", 10: "auto", 11: "auto"}
         
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
@@ -287,31 +264,18 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 available_zones.append(zone_num)
                 
                 zone_status = {}
-                zone_status['autoHeat_sp'] = info[Z_STS_IDX_AUTO_HEAT_SP]
-                zone_status['autoCool_sp'] = info[Z_STS_IDX_AUTO_COOL_SP]
-                zone_status['cool_sp'] = info[Z_STS_IDX_COOL_SP]
-                zone_status['heat_sp'] = info[Z_STS_IDX_HEAT_SP]
-                zone_status['dry_sp'] = info[Z_STS_IDX_DRY_SP]
-                zone_status['fan_mode_num'] = info[Z_STS_IDX_FAN_ONLY_MODE]  # Fan setting in fan-only mode
-                zone_status['cool_fan_mode_num'] = info[Z_STS_IDX_COOL_FAN]  # Fan setting in cool mode
-                zone_status['auto_fan_mode_num'] = info[Z_STS_IDX_AUTO_FAN]  # Fan setting in auto mode
-                zone_status['mode_num'] = info[Z_STS_IDX_MODE]
-                # Choose heat fan slot depending on device mode: heat pump typically uses slot 8, furnace uses slot 11.
-                # If heat-pump slot reports 'full auto' (128) but the furnace slot contains a manual setting,
-                # prefer the manual (furnace) slot so the UI reflects the effective fan setting.
-                if zone_status['mode_num'] == 5:
-                    hp_fan = info[Z_STS_IDX_HEATPUMP_FAN]
-                    furnace_fan = info[Z_STS_IDX_HEAT_FAN]
-                    if hp_fan == 128 and furnace_fan != 128:
-                        zone_status['heat_fan_mode_num'] = furnace_fan
-                        zone_status['_heat_fan_slot_used'] = 'furnace_fallback'
-                    else:
-                        zone_status['heat_fan_mode_num'] = hp_fan
-                        zone_status['_heat_fan_slot_used'] = 'heatpump'
-                else:
-                    zone_status['heat_fan_mode_num'] = info[Z_STS_IDX_HEAT_FAN]
-                zone_status['facePlateTemperature'] = info[Z_STS_IDX_FACEPLATE_TEMP]
-                zone_status['current_mode_num'] = info[Z_STS_IDX_CURRENT_MODE] # Current operating mode when in AUTO mode
+                zone_status['autoHeat_sp'] = info[0]
+                zone_status['autoCool_sp'] = info[1]
+                zone_status['cool_sp'] = info[2]
+                zone_status['heat_sp'] = info[3]
+                zone_status['dry_sp'] = info[4]
+                zone_status['fan_mode_num'] = info[6]  # Fan setting in fan-only mode
+                zone_status['cool_fan_mode_num'] = info[7]  # Fan setting in cool mode
+                zone_status['auto_fan_mode_num'] = info[9]  # Fan setting in auto mode
+                zone_status['mode_num'] = info[10]
+                zone_status['heat_fan_mode_num'] = info[11]  # Fan setting in heat mode
+                zone_status['facePlateTemperature'] = info[12]
+                zone_status['current_mode_num'] = info[15] # Current operating mode when in AUTO mode
 
                 if 7 in param:
                     zone_status['off'] = True
@@ -339,20 +303,19 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 
                 # Store the raw fan mode numbers and their string representations
                 if current_mode == "fan":
-                    fan_num = info[Z_STS_IDX_FAN_ONLY_MODE]
+                    fan_num = info[6]
                     zone_status['fan_mode_num'] = fan_num
                     zone_status['fan_mode'] = FAN_MODES_FAN_ONLY.get(fan_num, "off")
                 elif current_mode == "cool":
-                    fan_num = info[Z_STS_IDX_COOL_FAN]
+                    fan_num = info[7]
                     zone_status['cool_fan_mode_num'] = fan_num
                     zone_status['cool_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "heat":
-                    # Use the heat_fan_mode_num chosen earlier (may be HEATPUMP_FAN or HEAT_FAN)
-                    fan_num = zone_status.get('heat_fan_mode_num', info[Z_STS_IDX_HEAT_FAN])
+                    fan_num = info[11]
                     zone_status['heat_fan_mode_num'] = fan_num
                     zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "auto":
-                    fan_num = info[Z_STS_IDX_AUTO_FAN]
+                    fan_num = info[9]
                     zone_status['auto_fan_mode_num'] = fan_num
                     zone_status['auto_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
 
@@ -716,38 +679,3 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             except Exception as e:
                 _LOGGER.debug("Error disconnecting: %s", str(e))
             self._client = None
-
-    async def request_quick_poll(self, hass, ble_device: BLEDevice, interval: float = 0.5, repeats: int = 3) -> bool:
-        """Perform a short burst of polls to quickly verify device state.
-
-        This is intended to be used after UI-initiated commands to get prompt
-        confirmation without waiting for the normal poll interval.
-        """
-        if ble_device is None:
-            ble_device = self._ble_device
-            if ble_device is None:
-                _LOGGER.debug("No BLE device available for quick poll")
-                return False
-
-        _LOGGER.debug("Starting quick poll burst: interval=%.2f repeats=%d", interval, repeats)
-        success = False
-        for i in range(max(1, int(repeats))):
-            try:
-                msg = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                sent = await self.send_command(hass, ble_device, msg)
-                if not sent:
-                    _LOGGER.debug("Quick poll send_command failed on attempt %d", i + 1)
-                    continue
-                payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
-                if payload:
-                    preview, full_b64 = _format_payload_for_log(payload)
-                    _LOGGER.debug("Quick poll payload preview: %s (len=%d)", preview, len(payload))
-                    self.decrypt(payload)
-                    success = True
-                else:
-                    _LOGGER.debug("Quick poll read returned no payload on attempt %d", i + 1)
-            except Exception as e:
-                _LOGGER.debug("Quick poll attempt %d failed: %s", i + 1, str(e))
-            await asyncio.sleep(interval)
-        _LOGGER.debug("Quick poll burst completed (success=%s)", success)
-        return success
