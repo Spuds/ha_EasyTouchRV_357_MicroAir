@@ -9,20 +9,43 @@ import base64
 
 
 def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
-    """Return a short printable preview and a base64-encoded full payload."""
+    """Return a short printable preview and a base64-encoded full payload.
+
+    Preferentially extract the `Z_sts` section if the payload is valid JSON so
+    the preview focuses on the zone status values instead of raw escaped
+    whitespace characters like '\n' and '\t'. Fall back to a generic repr
+    preview when parsing fails or Z_sts is not present.
+    """
     try:
         if isinstance(payload, (bytes, bytearray)):
             data_bytes = bytes(payload)
         else:
             # fallback: convert string to bytes
             data_bytes = str(payload).encode('utf-8', errors='replace')
+
+        # Compute safe base64 full dump
+        full_b64 = base64.b64encode(data_bytes).decode('ascii')
+
+        # Try to parse JSON and extract Z_sts for a concise preview
+        try:
+            decoded = data_bytes.decode('utf-8', errors='replace')
+            parsed = json.loads(decoded)
+            if isinstance(parsed, dict) and 'Z_sts' in parsed:
+                zsts = parsed['Z_sts']
+                # Make a compact JSON preview of Z_sts
+                z_preview = json.dumps({'Z_sts': zsts}, separators=(',', ':'), ensure_ascii=False)
+                preview = z_preview[:200]
+                return preview, full_b64
+        except Exception:
+            # JSON parse failed or Z_sts absent; fall back
+            pass
+
+        # Fallback: use repr of decoded text so nonprintables are visible
         try:
             text = data_bytes.decode('utf-8', errors='replace')
         except Exception:
             text = repr(data_bytes)
-        # Use repr for preview so non-printable characters are visible (e.g., NUL)
         preview = repr(text)[:200]
-        full_b64 = base64.b64encode(data_bytes).decode('ascii')
         return preview, full_b64
     except Exception:
         return ('', '')
