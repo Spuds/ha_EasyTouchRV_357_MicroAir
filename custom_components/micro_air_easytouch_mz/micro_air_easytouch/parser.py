@@ -416,42 +416,43 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         return None
 
     async def reboot_device(self, hass, ble_device: BLEDevice) -> bool:
-        """Reboot the device by sending reset command."""
-        try:
-            self._ble_device = ble_device
-            self._client = await self._connect_to_device(ble_device)
-            if not self._client or not self._client.is_connected:
-                _LOGGER.error("Failed to connect for reboot")
-                return False
-            if not await self.authenticate(self._password):
-                _LOGGER.error("Failed to authenticate for reboot")
-                return False
-            write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
-            if write_delay > 0:
-                await asyncio.sleep(write_delay)
-            reset_cmd = {"Type": "Change", "Changes": {"zone": 0, "reset": " OK"}}
-            cmd_bytes = json.dumps(reset_cmd).encode()
+        """Reboot the device by sending reset command in a serialized manner."""
+        async with self._client_lock:
             try:
-                await self._client.write_gatt_char(UUIDS["jsonCmd"], cmd_bytes, response=True)
-                _LOGGER.info("Reboot command sent successfully")
-                return True
-            except BleakError as e:
-                if "Error" in str(e) and "133" in str(e):
-                    _LOGGER.info("Device is rebooting as expected")
+                self._ble_device = ble_device
+                self._client = await self._connect_to_device(ble_device)
+                if not self._client or not self._client.is_connected:
+                    _LOGGER.error("Failed to connect for reboot")
+                    return False
+                if not await self.authenticate(self._password):
+                    _LOGGER.error("Failed to authenticate for reboot")
+                    return False
+                write_delay = self._get_operation_delay(hass, ble_device.address, 'write')
+                if write_delay > 0:
+                    await asyncio.sleep(write_delay)
+                reset_cmd = {"Type": "Change", "Changes": {"zone": 0, "reset": " OK"}}
+                cmd_bytes = json.dumps(reset_cmd).encode()
+                try:
+                    await self._client.write_gatt_char(UUIDS["jsonCmd"], cmd_bytes, response=True)
+                    _LOGGER.info("Reboot command sent successfully")
                     return True
-                _LOGGER.error("Failed to send reboot command: %s", str(e))
-                self._increase_operation_delay(hass, ble_device.address, 'write')
-                return False
-        except Exception as e:
-            _LOGGER.error("Error during reboot: %s", str(e))
-            return False
-        finally:
-            try:
-                if self._client and self._client.is_connected:
-                    await self._client.disconnect()
+                except BleakError as e:
+                    if "Error" in str(e) and "133" in str(e):
+                        _LOGGER.info("Device is rebooting as expected")
+                        return True
+                    _LOGGER.error("Failed to send reboot command: %s", str(e))
+                    self._increase_operation_delay(hass, ble_device.address, 'write')
+                    return False
             except Exception as e:
-                _LOGGER.debug("Error disconnecting after reboot: %s", str(e))
-            self._client = None
+                _LOGGER.error("Error during reboot: %s", str(e))
+                return False
+            finally:
+                try:
+                    if self._client and self._client.is_connected:
+                        await self._client.disconnect()
+                except Exception as e:
+                    _LOGGER.debug("Error disconnecting after reboot: %s", str(e))
+                self._client = None
             self._ble_device = None
 
     async def get_available_zones(self, hass, ble_device: BLEDevice) -> list[int]:
@@ -711,23 +712,25 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             raise
             
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Send command to device."""
-        try:
-            if not self._client or not self._client.is_connected:
-                self._client = await self._connect_to_device(ble_device)
-                if not self._client or not self._client.is_connected:
-                    return False
-                if not await self.authenticate(self._password):
-                    return False
-            command_bytes = json.dumps(command).encode()
-            return await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
-        except Exception as e:
-            _LOGGER.error("Error sending command: %s", str(e))
-            return False
-        finally:
+        """Send command to device in a serialized manner to avoid BLE races."""
+        async with self._client_lock:
             try:
-                if self._client and self._client.is_connected:
-                    await self._client.disconnect()
+                if not self._client or not self._client.is_connected:
+                    self._client = await self._connect_to_device(ble_device)
+                    if not self._client or not self._client.is_connected:
+                        return False
+                    if not await self.authenticate(self._password):
+                        return False
+                command_bytes = json.dumps(command).encode()
+                result = await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
+                return result
             except Exception as e:
-                _LOGGER.debug("Error disconnecting: %s", str(e))
-            self._client = None
+                _LOGGER.error("Error sending command: %s", str(e))
+                return False
+            finally:
+                try:
+                    if self._client and self._client.is_connected:
+                        await self._client.disconnect()
+                except Exception as e:
+                    _LOGGER.debug("Error disconnecting: %s", str(e))
+                self._client = None
