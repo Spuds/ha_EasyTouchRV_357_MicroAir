@@ -1,7 +1,7 @@
 {
-    "domain": "micro_air_easytouch_mz",
+    "domain": "micro_air_easytouch",
     "name": "Micro-Air EasyTouch RV Thermostat",
-    "icon": "icon.png",
+    "icon": "mdi:thermostat",
     "bluetooth": [
         {
             "local_name": "EasyTouch*",
