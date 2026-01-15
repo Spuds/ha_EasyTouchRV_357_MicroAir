@@ -5,12 +5,12 @@
       "password": {
         "description": "### EasyTouch Account Credentials\n\nEnter your EasyTouch account email and password to connect to your RV thermostat.",
         "data": {
-          "username": "Email Address",
-          "password": "Password"
+          "email": "Email Address",
+          "password": "EasyTouch Account Password"
         }
       },
       "bluetooth_confirm": {
-        "description": "Confirm adding {name}"
+        "description": "### Confirm Device\n\nYou are about to add **{name}** to Home Assistant. Press **Submit** to continue."
       },
       "user": {
         "description": "Select a discovered EasyTouch device",
