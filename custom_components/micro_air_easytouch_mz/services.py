@@ -239,8 +239,90 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=SERVICE_TEST_SET_MODE_SCHEMA,
     )
 
+    # Schema and handler for sending arbitrary Change commands (developer testing)
+    SERVICE_TEST_SEND_CHANGES_SCHEMA = vol.Schema(
+        {
+            vol.Optional("address"): cv.string,
+            vol.Optional("entity_id"): cv.entity_id,
+            vol.Required("zone"): vol.All(int, vol.Range(min=0)),
+            vol.Optional("changes"): dict,  # Arbitrary key-value pairs for Changes
+        }
+    )
+
+    async def handle_test_send_changes(call: ServiceCall) -> None:
+        """Handle the test_send_changes service call (developer-only)."""
+        address = call.data.get("address")
+        entity_id = call.data.get("entity_id")
+        zone = int(call.data.get("zone"))
+        changes_dict = call.data.get("changes", {})
+
+        # Resolve config entry similar to other services
+        config_entry = None
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if address and entry.unique_id == address:
+                config_entry = entry
+                break
+
+        if not config_entry and entity_id:
+            try:
+                from homeassistant.helpers import entity_registry as er
+                registry = er.async_get(hass)
+                entity = registry.async_get(entity_id)
+                if entity and entity.config_entry_id:
+                    config_entry = hass.config_entries.async_get_entry(entity.config_entry_id)
+            except Exception:
+                pass
+
+        if not config_entry and address:
+            norm = _normalize(address)
+            for entry in hass.config_entries.async_entries(DOMAIN):
+                if entry.unique_id and _normalize(str(entry.unique_id)) == norm:
+                    config_entry = entry
+                    break
+
+        if not config_entry:
+            known = [entry.unique_id for entry in hass.config_entries.async_entries(DOMAIN)]
+            _LOGGER.error(
+                "No MicroAirEasyTouch config entry found for address/entity '%s' (known entries: %s)",
+                address or entity_id,
+                known,
+            )
+            return
+
+        device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
+
+        # Determine BLE address to use
+        ble_address = address or config_entry.unique_id
+        ble_device = async_ble_device_from_address(hass, ble_address)
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            return
+
+        # Build and send custom Change command with arbitrary changes
+        changes = {"zone": zone}
+        changes.update(changes_dict)
+        command = {"Type": "Change", "Changes": changes}
+        
+        _LOGGER.info("Sending test changes to zone %d on device %s: %s", zone, ble_address, changes_dict)
+        try:
+            success = await device_data.send_command(hass, ble_device, command)
+            if success:
+                _LOGGER.info("Successfully sent test changes to zone %d on device %s", zone, ble_address)
+            else:
+                _LOGGER.error("Failed to send test changes to device %s", ble_address)
+        except Exception as e:
+            _LOGGER.error("Error sending test changes to device %s: %s", ble_address, str(e))
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_send_changes",
+        handle_test_send_changes,
+        schema=SERVICE_TEST_SEND_CHANGES_SCHEMA,
+    )
+
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister services for the MicroAirEasyTouch integration."""
     hass.services.async_remove(DOMAIN, "set_location")
     hass.services.async_remove(DOMAIN, "request_quick_poll")
     hass.services.async_remove(DOMAIN, "test_set_mode")
+    hass.services.async_remove(DOMAIN, "test_send_changes")
