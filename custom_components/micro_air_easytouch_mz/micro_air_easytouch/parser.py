@@ -78,10 +78,16 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
             if isinstance(parsed, dict) and 'Z_sts' in parsed:
                 zsts = parsed['Z_sts']
                 prm = parsed.get('PRM')
-                # Make a compact JSON preview of Z_sts and PRM (when present)
+                ci = parsed.get('CI')
+                ha = parsed.get('hA') if 'hA' in parsed else parsed.get('HA')
+                # Make a compact JSON preview of Z_sts and selected metadata (PRM/CI/hA) when present
                 preview_obj = {'Z_sts': zsts}
                 if 'PRM' in parsed:
                     preview_obj['PRM'] = prm
+                if ci is not None:
+                    preview_obj['CI'] = ci
+                if ha is not None:
+                    preview_obj['hA'] = ha
                 z_preview = json.dumps(preview_obj, separators=(',', ':'), ensure_ascii=False)
                 preview = z_preview[:250]
                 return preview, full_b64
@@ -248,6 +254,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         hr_status['ALL'] = status
         # Expose PRM (parameter flags) at top level for easy access
         hr_status['PRM'] = param
+        # Expose controller id and HA indicator for debugging/diagnostics
+        hr_status['CI'] = status.get('CI')
+        # Device may use 'hA' or 'HA' field; normalize to 'hA' on the parsed state
+        ha_val = status.get('hA') if 'hA' in status else status.get('HA')
+        hr_status['hA'] = ha_val
         
         # Detect available zones and process each one
         available_zones = []
@@ -342,7 +353,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         # Apply parsed state as authoritative and notify subscribers
         try:
-            _LOGGER.debug("Applying parsed device state (zones=%d)", len(hr_status.get('zones', {})))
+            _LOGGER.debug("Applying parsed device state (zones=%d, CI=%s, hA=%s)", len(hr_status.get('zones', {})), hr_status.get('CI'), hr_status.get('hA'))
             # Overwrite the stored parsed state — polls are authoritative
             self._device_state = hr_status
             self._notify_update()
