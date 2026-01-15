@@ -12,6 +12,7 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_PASSWORD, CONF_USERNAME
+
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData  # Corrected import
 from .const import DOMAIN
 
@@ -60,6 +61,7 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PASSWORD): str,
             }),
             errors=errors,
+            description_placeholders={},
         )
 
     async def async_step_bluetooth_confirm(
