@@ -2,7 +2,7 @@
   "config": {
     "flow_title": "MicroAir EasyTouch",
     "step": {
-      "password": {
+      "credentials": {
         "description": "### EasyTouch Account Credentials\n\nEnter your EasyTouch account email and password to connect to your RV thermostat.",
         "data": {
           "email": "Email Address",
