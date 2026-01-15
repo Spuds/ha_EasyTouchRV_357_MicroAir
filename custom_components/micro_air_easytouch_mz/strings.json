@@ -20,6 +20,9 @@
         "description": "[%key:component::bluetooth::config::step::bluetooth_confirm::description%]"
       }
     },
+    "error": {
+      "invalid_auth": "Invalid email or password. Please check your credentials and try again."
+    },
     "abort": {
       "not_supported": "Device not supported",
       "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]",
