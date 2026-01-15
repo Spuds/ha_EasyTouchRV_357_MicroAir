@@ -414,7 +414,15 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             if self.hvac_mode == HVACMode.COOL:
                 changes["coolFan"] = fan_value
             elif self.hvac_mode == HVACMode.HEAT:
-                changes["heatFan"] = fan_value
+                # For heat mode, we need to use the correct fan field based on the specific heat mode
+                # Mode 3,4 = furnace modes, Mode 5 = heat pump, Mode 7 = heat strip
+                mode_num = self._state.get("mode_num", 5)
+                if mode_num in (3, 4):
+                    # Furnace modes use a different fan field
+                    changes["furnaceFan"] = fan_value
+                else:
+                    # Heat pump (5) and heat strip (7) use heatFan
+                    changes["heatFan"] = fan_value
             elif self.hvac_mode == HVACMode.AUTO:
                 changes["autoFan"] = fan_value
             message = {"Type": "Change", "Changes": changes}
