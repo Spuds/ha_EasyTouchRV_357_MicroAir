@@ -36,6 +36,7 @@ class MicroAirEasyTouchRebootButton(ButtonEntity):
         self._mac_address = mac_address
         self._attr_unique_id = f"microaireasytouch_{self._mac_address}_reboot"
         self._attr_name = "Reboot Device"
+        self._attr_icon = "mdi:restart"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"MicroAirEasyTouch_{self._mac_address}")},
             name=f"EasyTouch {self._mac_address}",
@@ -61,6 +62,7 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
         self._mac_address = mac_address
         self._attr_unique_id = f"microaireasytouch_{self._mac_address}_all_off"
         self._attr_name = "All Zones Off"
+        self._attr_icon = "mdi:power-off"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"MicroAirEasyTouch_{self._mac_address}")},
             name=f"EasyTouch {self._mac_address}",
