@@ -14,7 +14,7 @@ HA_MODE_TO_EASY_MODE = {
     HVACMode.OFF: 0,
     HVACMode.HEAT: 5,
     HVACMode.COOL: 2,
-    HVACMode.AUTO: 8, # Try 8 generic heat/cool .. Use 10 for AUTO pairing with heatpump
+    HVACMode.AUTO: 8, # Try 8 generic heat/cool
     HVACMode.FAN_ONLY: 1,
     HVACMode.DRY: 6,
 }

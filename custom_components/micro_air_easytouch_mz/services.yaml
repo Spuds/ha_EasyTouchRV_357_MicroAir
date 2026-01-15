@@ -29,4 +29,3 @@ set_location:
           min: -180.0
           max: 180.0
           mode: box
-

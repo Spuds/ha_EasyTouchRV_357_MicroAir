@@ -36,15 +36,12 @@ def retry_authentication(retries=3, delay=1):
                 try:
                     result = await func(*args, **kwargs)
                     if result:
-                        _LOGGER.debug("Authentication successful on attempt %d/%d", attempt + 1, retries)
                         return True
-                    _LOGGER.debug("Authentication returned False on attempt %d/%d", attempt + 1, retries)
                     if attempt < retries - 1:
                         await asyncio.sleep(delay)
                         continue
                 except Exception as e:
                     last_exception = e
-                    _LOGGER.debug("Authentication attempt %d/%d failed: %s", attempt + 1, retries, str(e))
                     if attempt < retries - 1:
                         await asyncio.sleep(delay)
                         continue
@@ -80,9 +77,13 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
             parsed = json.loads(decoded)
             if isinstance(parsed, dict) and 'Z_sts' in parsed:
                 zsts = parsed['Z_sts']
-                # Make a compact JSON preview of Z_sts
-                z_preview = json.dumps({'Z_sts': zsts}, separators=(',', ':'), ensure_ascii=False)
-                preview = z_preview[:200]
+                prm = parsed.get('PRM')
+                # Make a compact JSON preview of Z_sts and PRM (when present)
+                preview_obj = {'Z_sts': zsts}
+                if 'PRM' in parsed:
+                    preview_obj['PRM'] = prm
+                z_preview = json.dumps(preview_obj, separators=(',', ':'), ensure_ascii=False)
+                preview = z_preview[:250]
                 return preview, full_b64
         except Exception:
             # JSON parse failed or Z_sts absent; fall back
@@ -245,6 +246,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
         hr_status['ALL'] = status
+        # Expose PRM (parameter flags) at top level for easy access
+        hr_status['PRM'] = param
         
         # Detect available zones and process each one
         available_zones = []
