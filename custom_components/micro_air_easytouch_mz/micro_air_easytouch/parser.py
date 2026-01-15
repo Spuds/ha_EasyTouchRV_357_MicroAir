@@ -278,35 +278,38 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 available_zones.append(zone_num)
                 
                 zone_status = {}
-                zone_status['autoHeat_sp'] = info[0]
-                zone_status['autoCool_sp'] = info[1]
-                zone_status['cool_sp'] = info[2]
-                zone_status['heat_sp'] = info[3]
-                zone_status['dry_sp'] = info[4]
-                zone_status['fan_mode_num'] = info[6]  # Fan setting in fan-only mode
-                zone_status['cool_fan_mode_num'] = info[7]  # Fan setting in cool mode
-                zone_status['auto_fan_mode_num'] = info[9]  # Fan setting in auto mode
-                zone_status['mode_num'] = info[10]
-                zone_status['heat_fan_mode_num'] = info[11]  # Fan setting in heat mode
-                zone_status['facePlateTemperature'] = info[12]
-                zone_status['current_mode_num'] = info[15] # Current operating mode when in AUTO mode
+                zone_status['autoHeat_sp'] = info[0]            # Auto mode heat setpoint
+                zone_status['autoCool_sp'] = info[1]            # Auto mode cool setpoint
+                zone_status['cool_sp'] = info[2]                # Cool mode setpoint
+                zone_status['heat_sp'] = info[3]                # Heat mode setpoint
+                zone_status['dry_sp'] = info[4]                 # Dry/Dehumidify setpoint
+                zone_status['fan_mode_num'] = info[6]           # Fan setting in fan-only mode
+                zone_status['cool_fan_mode_num'] = info[7]      # Fan setting in cool mode
+                zone_status['heat_fan_mode_num'] = info[8]      # Fan setting in heat modes (5=heat pump, 7=heat strip)
+                zone_status['auto_fan_mode_num'] = info[9]      # Fan setting in auto mode
+                zone_status['mode_num'] = info[10]              # User selected mode
+                zone_status['furnace_fan_mode_num'] = info[11]  # Fan setting in furnace heating modes (3=propane, 4=aquahot)
+                zone_status['facePlateTemperature'] = info[12]  # Current actual temperature
+                zone_status['active_state_num'] = info[15]      # Active state (0=idle, 2=cooling, 4=heating, etc.)
 
-                if 7 in param:
-                    zone_status['off'] = True
-                if 15 in param:
-                    zone_status['on'] = True
+                # Check unit power state from PRM[1]: 3=off, 11=on
+                if len(param) > 1:
+                    unit_state = param[1]
+                    zone_status['off'] = (unit_state == 3)
+                    zone_status['on'] = (unit_state == 11)
 
                 # Map modes
-                # Only use current_mode_num when non-zero
-                if zone_status['current_mode_num'] in modes and zone_status['current_mode_num'] != 0:
-                    zone_status['current_mode'] = modes[zone_status['current_mode_num']]
                 if zone_status['mode_num'] in modes:
                     zone_status['mode'] = modes[zone_status['mode_num']]
 
-                # For non-auto modes the device may set current_mode_num to 0.
-                # In that case, the chosen 'mode' is also the current operating mode.
-                if 'current_mode' not in zone_status or not zone_status.get('current_mode'):
-                    zone_status['current_mode'] = zone_status.get('mode')
+                # Map active state to current operating mode
+                # Active state indicates what the unit is actually doing
+                active_state_map = {0: "off", 2: "cool", 4: "heat"}
+                if zone_status['active_state_num'] in active_state_map:
+                    zone_status['current_mode'] = active_state_map[zone_status['active_state_num']]
+                else:
+                    # Fallback: use selected mode if active state is unknown
+                    zone_status['current_mode'] = zone_status.get('mode', 'off')
 
                 # Detect heat source if mode_num indicates heat variants
                 if zone_status.get('mode_num') in (4, 5):
@@ -324,10 +327,16 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     fan_num = info[7]
                     zone_status['cool_fan_mode_num'] = fan_num
                     zone_status['cool_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
-                elif current_mode == "heat":
-                    fan_num = info[11]
-                    zone_status['heat_fan_mode_num'] = fan_num
-                    zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
+                elif current_mode in ("heat_on", "heat"):
+                    # For heat modes, use different fan index based on specific mode
+                    if zone_status.get('mode_num') in (3, 4):  # Furnace heat modes
+                        fan_num = info[11]
+                        zone_status['furnace_fan_mode_num'] = fan_num
+                        zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
+                    elif zone_status.get('mode_num') in (5, 7):  # Heat pump (5) or heat strip (7)
+                        fan_num = info[8]
+                        zone_status['heat_fan_mode_num'] = fan_num
+                        zone_status['heat_fan_mode'] = FAN_MODES_FULL.get(fan_num, "full auto")
                 elif current_mode == "auto":
                     fan_num = info[9]
                     zone_status['auto_fan_mode_num'] = fan_num

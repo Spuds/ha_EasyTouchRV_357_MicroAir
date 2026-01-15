@@ -22,10 +22,15 @@ HA_MODE_TO_EASY_MODE = {
 # Reverse mapping for reported codes -> HA modes. Add extra reported-only mappings.
 EASY_MODE_TO_HA_MODE = {v: k for k, v in HA_MODE_TO_EASY_MODE.items()}
 
-# Device may report mode 4 for heat (furnace) and 8/10/11 for auto — map them to HA modes for status
+# Device may report mode additonal heat modes and auto modes
+EASY_MODE_TO_HA_MODE[3] = HVACMode.HEAT # furnace
 EASY_MODE_TO_HA_MODE[4] = HVACMode.HEAT # furnace
-EASY_MODE_TO_HA_MODE[11] = HVACMode.AUTO # auto (AC/Furnace)
+EASY_MODE_TO_HA_MODE[7] = HVACMode.HEAT # heat strip 
+EASY_MODE_TO_HA_MODE[12] = HVACMode.HEAT # electric heat 
+
+EASY_MODE_TO_HA_MODE[9] = HVACMode.AUTO # auto (AC/Strip)
 EASY_MODE_TO_HA_MODE[10] = HVACMode.AUTO # auto (AC/HeatPump)
+EASY_MODE_TO_HA_MODE[11] = HVACMode.AUTO # auto (AC/Furnace)
 
 # Fan mode mappings (general and mode-specific)
 FAN_MODES_FULL = {
