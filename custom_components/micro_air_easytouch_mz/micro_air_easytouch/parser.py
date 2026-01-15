@@ -353,7 +353,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         # Apply parsed state as authoritative and notify subscribers
         try:
-            _LOGGER.debug("Applying parsed device state (zones=%d, CI=%s, hA=%s)", len(hr_status.get('zones', {})), hr_status.get('CI'), hr_status.get('hA'))
+            _LOGGER.debug("Applying parsed device state (zones=%d)", len(hr_status.get('zones', {})))
             # Overwrite the stored parsed state — polls are authoritative
             self._device_state = hr_status
             self._notify_update()

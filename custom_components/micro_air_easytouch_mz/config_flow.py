@@ -61,6 +61,7 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PASSWORD): str,
             }),
             errors=errors,
+            description_placeholders={},
         )
 
     async def async_step_bluetooth_confirm(

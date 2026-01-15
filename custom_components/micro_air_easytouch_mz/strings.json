@@ -8,6 +8,14 @@
           "address": "[%key:common::config_flow::data::device%]"
         }
       },
+      "password": {
+        "title": "EasyTouch Account Credentials",
+        "description": "Enter your EasyTouch account email and password to connect to your RV thermostat.",
+        "data": {
+          "username": "Email Address",
+          "password": "Password"
+        }
+      },
       "bluetooth_confirm": {
         "description": "[%key:component::bluetooth::config::step::bluetooth_confirm::description%]"
       }
