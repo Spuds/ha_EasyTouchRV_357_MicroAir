@@ -93,29 +93,41 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
             return unit_state == 11  # 11=on, 3=off
         return False  # Default to off if no data available
 
+    def _get_zone_count(self) -> int:
+        """Get the number of available zones from device data."""
+        device_data = self._data.async_get_device_data()
+        available_zones = device_data.get('available_zones', [0])
+        return len(available_zones)
+
     async def async_press(self) -> None:
         """Toggle system-wide power (all zones on/off).
 
+        Sends command to a non-existent zone (zone_count) to toggle system power
+        without affecting individual zone states. This allows zones to retain
+        their last state when the system comes back online.
+        
         Checks current state from PRM[1] and toggles:
-        - If currently on (PRM[1]=11), send mode=0, power=0 (turn off)
-        - If currently off (PRM[1]=3), send mode=0, power=1 (turn on)
+        - If currently on (PRM[1]=11), send mode=0, power=0, zone=zone_count (turn off)
+        - If currently off (PRM[1]=3), send mode=0, power=1, zone=zone_count (turn on)
         """
         is_on = self._is_unit_on()
         new_power_state = 0 if is_on else 1
+        zone_count = self._get_zone_count()
         action = "OFF" if is_on else "ON"
         
-        _LOGGER.debug("Power toggle button pressed - current state: %s, setting to: %s", 
-                     "ON" if is_on else "OFF", action)
+        _LOGGER.debug("Power toggle button pressed - current state: %s, setting to: %s, using zone: %d", 
+                     "ON" if is_on else "OFF", action, zone_count)
         
         ble_device = async_ble_device_from_address(self.hass, self._mac_address)
         if not ble_device:
             _LOGGER.error("Could not find BLE device to send power toggle: %s", self._mac_address)
             return
         
-        # Send mode=0 with power state (mode 0 required for power control)
-        cmd = {"Type": "Change", "Changes": {"mode": 0, "power": new_power_state}}
+        # Send to non-existent zone (zone_count) to avoid affecting individual zone states
+        cmd = {"Type": "Change", "Changes": {"mode": 0, "zone": zone_count, "power": new_power_state}}
         success = await self._data.send_command(self.hass, ble_device, cmd)
         if success:
-            _LOGGER.info("Sent system-wide %s (mode=0, power=%d) to device %s", action, new_power_state, self._mac_address)
+            _LOGGER.info("Sent system-wide %s (mode=0, zone=%d, power=%d) to device %s", 
+                        action, zone_count, new_power_state, self._mac_address)
         else:
             _LOGGER.error("Failed to send system-wide %s to device %s", action, self._mac_address)
