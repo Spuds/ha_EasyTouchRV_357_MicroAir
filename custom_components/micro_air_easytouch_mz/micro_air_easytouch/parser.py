@@ -144,7 +144,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._connected = False                    # Tracks persistent connection state
         self._connection_health_check_task = None  # Monitors connection health
         self._last_activity_time = 0.0             # Track last successful operation
-        self._connection_idle_timeout = 300.0      # Disconnect after 5 minutes of inactivity
+        self._connection_idle_timeout = 120.0  # Disconnect after 2 minutes of inactivity (reduced)
+        self._health_check_interval = 60.0     # Check connection health every 60 seconds
 
         # Polling configuration and runtime state
         # Polling is enabled by default because device does not advertise full state
@@ -612,8 +613,20 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     # Wait for next command with timeout
                     command_item = await asyncio.wait_for(self._command_queue.get(), timeout=60.0)
                     
+                    # If we don't have a valid BLE device, try to resolve it
+                    current_ble_device = ble_device
+                    if not current_ble_device and hasattr(self, '_address'):
+                        current_ble_device = await self._resolve_ble_device_with_retry(hass, self._address)
+                    
+                    if not current_ble_device:
+                        _LOGGER.error("No BLE device available for command execution")
+                        if not command_item['result_future'].done():
+                            command_item['result_future'].set_result(False)
+                        self._command_queue.task_done()
+                        continue
+                    
                     # Execute command with connection management
-                    result = await self._execute_command_safely(hass, ble_device, command_item['command'])
+                    result = await self._execute_command_safely(hass, current_ble_device, command_item['command'])
                     
                     # Return result to caller
                     if not command_item['result_future'].done():
@@ -743,6 +756,9 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             self._connected = True
             self._last_activity_time = time.time()
             
+            # Start health monitoring
+            await self._start_connection_health_monitor(hass, ble_device)
+            
             _LOGGER.debug("Persistent connection established successfully")
             return True
             
@@ -750,6 +766,33 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             _LOGGER.error("Failed to ensure connection: %s", str(e))
             await self._disconnect_safely()
             return False
+
+    async def _resolve_ble_device_with_retry(self, hass, address: str, retries: int = 3) -> BLEDevice | None:
+        """Resolve BLE device with retry logic for devices in low-power mode."""
+        from homeassistant.components.bluetooth import async_ble_device_from_address
+        
+        for attempt in range(retries):
+            try:
+                ble_device = async_ble_device_from_address(hass, address)
+                if ble_device:
+                    _LOGGER.debug("Successfully resolved BLE device %s on attempt %d", address, attempt + 1)
+                    return ble_device
+                
+                # Device not found, might be in low-power mode
+                if attempt < retries - 1:
+                    wait_time = 2.0 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    _LOGGER.debug("BLE device %s not found, retrying in %.1fs (attempt %d/%d)", 
+                                address, wait_time, attempt + 1, retries)
+                    await asyncio.sleep(wait_time)
+                    
+            except Exception as e:
+                _LOGGER.debug("Error resolving BLE device %s on attempt %d: %s", address, attempt + 1, str(e))
+                if attempt < retries - 1:
+                    await asyncio.sleep(1.0)
+        
+        _LOGGER.warning("Failed to resolve BLE device %s after %d attempts - device may be in low-power mode", 
+                       address, retries)
+        return None
 
     async def _disconnect_safely(self) -> None:
         """Safely disconnect and clean up connection state."""
@@ -762,6 +805,43 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         finally:
             self._client = None
             self._connected = False
+
+    async def _start_connection_health_monitor(self, hass, ble_device: BLEDevice) -> None:
+        """Start background health monitoring for the persistent connection."""
+        if self._connection_health_check_task and not self._connection_health_check_task.done():
+            return  # Already running
+        
+        async def _health_check_loop():
+            while True:
+                try:
+                    await asyncio.sleep(self._health_check_interval)
+                    
+                    # Check if connection has been idle too long
+                    time_since_activity = time.time() - self._last_activity_time
+                    if time_since_activity > self._connection_idle_timeout:
+                        _LOGGER.debug("Connection idle for %.1fs, disconnecting to save resources", time_since_activity)
+                        await self._disconnect_safely()
+                        continue
+                    
+                    # If we have an active connection, verify it's still working
+                    if self._client and self._client.is_connected:
+                        try:
+                            # Simple health check - verify services are still available
+                            if not self._client.services:
+                                _LOGGER.debug("Connection health check failed - no services, reconnecting")
+                                await self._disconnect_safely()
+                        except Exception as e:
+                            _LOGGER.debug("Connection health check failed: %s, reconnecting", str(e))
+                            await self._disconnect_safely()
+                            
+                except asyncio.CancelledError:
+                    _LOGGER.debug("Connection health monitor cancelled")
+                    break
+                except Exception as e:
+                    _LOGGER.debug("Error in connection health monitor: %s", str(e))
+                    await asyncio.sleep(30)  # Wait before retrying
+        
+        self._connection_health_check_task = asyncio.create_task(_health_check_loop())
 
     async def async_shutdown(self) -> None:
         """Clean shutdown of all tasks and connections."""
@@ -851,13 +931,9 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     
                     # If we don't have a BLEDevice from advertisements, try to resolve it by stored address
                     if not self._ble_device and getattr(self, "_address", None):
-                        try:
-                            from homeassistant.components.bluetooth import async_ble_device_from_address
-                            self._ble_device = async_ble_device_from_address(hass, self._address)
-                            if self._ble_device:
-                                _LOGGER.debug("Resolved BLE device %s for polling", self._address)
-                        except Exception as e:
-                            _LOGGER.debug("Error resolving BLE device from address %s: %s", getattr(self, "_address", None), str(e))
+                        self._ble_device = await self._resolve_ble_device_with_retry(hass, self._address)
+                        if self._ble_device:
+                            _LOGGER.debug("Resolved BLE device %s for polling", self._address)
 
                     if not self._ble_device:
                         _LOGGER.debug("No BLE device known, skipping poll iteration")

@@ -52,10 +52,17 @@ async def async_register_services(hass: HomeAssistant) -> None:
         mac_address = config_entry.unique_id
         assert mac_address is not None
 
-        # Get BLE device
+        # Get BLE device with retry logic for devices in low-power mode
         ble_device = async_ble_device_from_address(hass, mac_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s", mac_address)
+            # Try alternative resolution method for devices in low-power mode
+            try:
+                ble_device = await device_data._resolve_ble_device_with_retry(hass, mac_address)
+            except Exception as e:
+                _LOGGER.debug("Alternative BLE resolution failed: %s", str(e))
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode", mac_address)
             return
 
         # Construct the command
@@ -139,11 +146,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use
+        # Determine BLE address to use and resolve with retry logic
         ble_address = address or config_entry.unique_id
         ble_device = async_ble_device_from_address(hass, ble_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            # Try alternative resolution method for devices in low-power mode
+            try:
+                ble_device = await device_data._resolve_ble_device_with_retry(hass, ble_address)
+            except Exception as e:
+                _LOGGER.debug("Alternative BLE resolution failed: %s", str(e))
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode", ble_address)
             return
 
         # Build and send raw Change command
@@ -216,11 +230,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use
+        # Determine BLE address to use and resolve with retry logic
         ble_address = address or config_entry.unique_id
         ble_device = async_ble_device_from_address(hass, ble_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            # Try alternative resolution method for devices in low-power mode
+            try:
+                ble_device = await device_data._resolve_ble_device_with_retry(hass, ble_address)
+            except Exception as e:
+                _LOGGER.debug("Alternative BLE resolution failed: %s", str(e))
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode", ble_address)
             return
 
         # Build and send command with configurable type
@@ -321,11 +342,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use
+        # Determine BLE address to use and resolve with retry logic
         ble_address = address or config_entry.unique_id
         ble_device = async_ble_device_from_address(hass, ble_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            # Try alternative resolution method for devices in low-power mode
+            try:
+                ble_device = await device_data._resolve_ble_device_with_retry(hass, ble_address)
+            except Exception as e:
+                _LOGGER.debug("Alternative BLE resolution failed: %s", str(e))
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode", ble_address)
             return
 
         # Build and send custom Change command with arbitrary changes
