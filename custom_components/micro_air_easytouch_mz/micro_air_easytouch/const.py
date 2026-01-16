@@ -22,7 +22,7 @@ HA_MODE_TO_EASY_MODE = {
 # Reverse mapping for reported codes -> HA modes. Add extra reported-only mappings.
 EASY_MODE_TO_HA_MODE = {v: k for k, v in HA_MODE_TO_EASY_MODE.items()}
 
-# Device may report mode additonal heat modes and auto modes
+# Device may report mode additional heat modes and auto modes
 EASY_MODE_TO_HA_MODE[3] = HVACMode.HEAT # furnace
 EASY_MODE_TO_HA_MODE[4] = HVACMode.HEAT # furnace
 EASY_MODE_TO_HA_MODE[7] = HVACMode.HEAT # heat strip 

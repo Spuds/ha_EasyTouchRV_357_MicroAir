@@ -738,29 +738,47 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 
                 # Send command
                 command_bytes = json.dumps(command).encode()
+                _LOGGER.debug("Sending command: %s", command)
                 if not await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device):
+                    _LOGGER.warning("Failed to write command to device: %s", command)
                     return False
                 
                 # For change commands, immediately read response to provide instant UI feedback
                 if command.get("Type") == "Change":
                     try:
-                        # Small delay to let device process the command
-                        await asyncio.sleep(0.1)
+                        # Longer delay to let device fully process the command
+                        await asyncio.sleep(0.3)
                         
-                        # Read the response and update state immediately
-                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
-                        if json_payload:
-                            preview, full_b64 = _format_payload_for_log(json_payload)
-                            _LOGGER.debug("Command response preview: %s (len=%d)", preview, len(json_payload))
-                            _LOGGER.debug("Command response (base64): %s", full_b64)
+                        # Send a specific status request for the zone that was changed
+                        zone = command.get("Changes", {}).get("zone", 0)
+                        status_cmd = {
+                            "Type": "Get Status", 
+                            "Zone": zone, 
+                            "EM": self._email, 
+                            "TM": int(time.time())
+                        }
+                        
+                        status_cmd_bytes = json.dumps(status_cmd).encode()
+                        if await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], status_cmd_bytes, ble_device):
+                            # Small delay before reading response
+                            await asyncio.sleep(0.1)
                             
-                            # Apply immediate state update for responsive UI
-                            self.decrypt(json_payload)
-                            _LOGGER.debug("Applied immediate status update after command")
+                            # Read the response and update state immediately
+                            json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
+                            if json_payload:
+                                preview, full_b64 = _format_payload_for_log(json_payload)
+                                _LOGGER.debug("Command verification response for zone %d: %s (len=%d)", zone, preview, len(json_payload))
+                                _LOGGER.debug("Command verification response (base64): %s", full_b64)
+                                
+                                # Apply immediate state update for responsive UI
+                                self.decrypt(json_payload)
+                                _LOGGER.debug("Applied immediate status verification after command for zone %d", zone)
+                            else:
+                                _LOGGER.warning("No response payload after command verification for zone %d", zone)
                         else:
-                            _LOGGER.debug("No response payload after command")
+                            _LOGGER.debug("Failed to send status verification command for zone %d", zone)
                     except Exception as e:
-                        _LOGGER.debug("Error reading immediate response (will rely on polling): %s", str(e))
+                        _LOGGER.warning("Error reading command verification (will rely on polling): %s", str(e))
                 
                 # Update activity timestamp
                 self._last_activity_time = time.time()

@@ -300,9 +300,14 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
-        ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+        ble_device = self._data.get_ble_device(self.hass)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device")
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+            if ble_device:
+                self._data.set_ble_device(ble_device)
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for temperature change")
             return
 
         changes = {"zone": self._zone, "power": 1}
@@ -319,7 +324,11 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             changes["autoHeat_sp"] = int(kwargs["target_temp_low"])
 
         if changes:
+            # Store original state for potential rollback
+            original_state = self._state.copy()
+            
             message = {"Type": "Change", "Changes": changes}
+            _LOGGER.debug("Sending temperature command for zone %s: %s", self._zone, changes)
             success = await self._data.send_command(self.hass, ble_device, message)
 
             if success:
@@ -337,6 +346,31 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         self._state["autoHeat_sp"] = changes["autoHeat_sp"]
                     self.async_write_ha_state()
                     _LOGGER.debug("Temperature set successfully for zone %s, immediate status update applied", self._zone)
+                    
+                    # Schedule a rollback check in case the device didn't actually change
+                    async def _check_and_rollback():
+                        await asyncio.sleep(3.0)  # Wait 3 seconds
+                        # If our optimistic state hasn't been updated by device response, consider rolling back
+                        current_device_state = self._data.async_get_device_data()
+                        if 'zones' in current_device_state and self._zone in current_device_state['zones']:
+                            device_zone_state = current_device_state['zones'][self._zone]
+                            # Check if device state matches our optimistic changes
+                            rollback_needed = False
+                            if "cool_sp" in changes and device_zone_state.get("cool_sp") != changes["cool_sp"]:
+                                rollback_needed = True
+                            elif "heat_sp" in changes and device_zone_state.get("heat_sp") != changes["heat_sp"]:
+                                rollback_needed = True
+                            
+                            if rollback_needed:
+                                _LOGGER.warning("Device did not accept temperature change for zone %s, rolling back UI", self._zone)
+                                # Restore original state
+                                for key in ["cool_sp", "heat_sp", "dry_sp", "autoCool_sp", "autoHeat_sp"]:
+                                    if key in original_state:
+                                        self._state[key] = original_state[key]
+                                self.async_write_ha_state()
+                    
+                    asyncio.create_task(_check_and_rollback())
+                    
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic temperature update: %s", str(e))
                 # Note: Command execution automatically reads response for immediate verification
@@ -345,9 +379,14 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
-        ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+        ble_device = self._data.get_ble_device(self.hass)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device")
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+            if ble_device:
+                self._data.set_ble_device(ble_device)
+        
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for HVAC mode change")
             return
 
         mode = HA_MODE_TO_EASY_MODE.get(hvac_mode)
