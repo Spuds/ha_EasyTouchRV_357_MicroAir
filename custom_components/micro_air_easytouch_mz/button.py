@@ -24,7 +24,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]["data"]
     mac_address = config_entry.unique_id
     assert mac_address is not None
-    entities = [MicroAirEasyTouchRebootButton(data, mac_address), MicroAirEasyTouchAllOffButton(data, mac_address)]
+    entities = [MicroAirEasyTouchRebootButton(data, mac_address), MicroAirEasyTouchPowerToggleButton(data, mac_address)]
     async_add_entities(entities)
 
 class MicroAirEasyTouchRebootButton(ButtonEntity):
@@ -54,7 +54,7 @@ class MicroAirEasyTouchRebootButton(ButtonEntity):
         await self._data.reboot_device(self.hass, ble_device)
 
 
-class MicroAirEasyTouchAllOffButton(ButtonEntity):
+class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
     """Toggle button for system-wide power control (all zones on/off)."""
 
     def __init__(self, data: MicroAirEasyTouchBluetoothDeviceData, mac_address: str) -> None:
@@ -67,10 +67,14 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
             manufacturer="Micro-Air",
             model="Thermostat",
         )
+        # Initialize name and icon based on current state
+        self._update_attributes()
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to device data updates when entity is added to hass."""
         self._data.async_subscribe_updates(self._handle_update)
+        # Update attributes when first added
+        self._update_attributes()
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from updates when entity is removed."""
@@ -80,23 +84,27 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
 
     def _handle_update(self, device_state=None) -> None:
         """Handle device state updates and refresh entity state."""
+        self._update_attributes()
         self.async_write_ha_state()
+
+    def _update_attributes(self) -> None:
+        """Update the name and icon attributes based on current device state."""
+        if self._is_unit_on():
+            self._attr_name = "All Zones Off"
+            self._attr_icon = "mdi:power-off"
+        else:
+            self._attr_name = "All Zones On"
+            self._attr_icon = "mdi:power-on"
 
     @property
     def name(self) -> str:
-        """Return dynamic name based on current state."""
-        if self._is_unit_on():
-            return "All Zones Off"
-        else:
-            return "All Zones On"
+        """Return the current name attribute."""
+        return self._attr_name
 
     @property
     def icon(self) -> str:
-        """Return dynamic icon based on current state."""
-        if self._is_unit_on():
-            return "mdi:power-off"
-        else:
-            return "mdi:power-on"
+        """Return the current icon attribute."""
+        return self._attr_icon
 
     def _is_unit_on(self) -> bool:
         """Check if unit is currently on based on PRM[1] value."""
@@ -143,7 +151,8 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
         if success:
             _LOGGER.info("Sent system-wide %s (mode=0, zone=%d, power=%d) to device %s", 
                         action, zone_count, new_power_state, self._mac_address)
-            # Trigger a state update to refresh name/icon
+            # Update attributes immediately and trigger a state update
+            self._update_attributes()
             self.async_write_ha_state()
         else:
             _LOGGER.error("Failed to send system-wide %s to device %s", action, self._mac_address)
