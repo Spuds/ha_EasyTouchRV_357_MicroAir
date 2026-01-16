@@ -44,10 +44,21 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]["data"]
     mac_address = config_entry.unique_id
     
-    # Get BLE device to probe for available zones
+    # Try to get zones from config entry first (detected during setup)
+    available_zones = config_entry.data.get('detected_zones', None)
+    if available_zones:
+        _LOGGER.info("Using zones from config entry for device %s: %s", mac_address, available_zones)
+        entities = []
+        for zone in available_zones:
+            entity = MicroAirEasyTouchClimate(data, mac_address, zone)
+            entities.append(entity)
+        async_add_entities(entities)
+        return
+    
+    # Fallback: Get BLE device to probe for available zones (legacy behavior)
     ble_device = async_ble_device_from_address(hass, mac_address)
     if not ble_device:
-        _LOGGER.error("Could not find BLE device to detect zones: %s", mac_address)
+        _LOGGER.warning("Could not find BLE device to detect zones: %s", mac_address)
         # Fall back to single zone if device not found
         entity = MicroAirEasyTouchClimate(data, mac_address, 0)
         async_add_entities([entity])
@@ -56,10 +67,10 @@ async def async_setup_entry(
     # Store the BLE device for persistent use
     data.set_ble_device(ble_device)
     
-    # Probe device for available zones
+    # Probe device for available zones (fallback only)
     try:
         available_zones = await data.get_available_zones(hass, ble_device)
-        _LOGGER.info("Detected zones for device %s: %s", mac_address, available_zones)
+        _LOGGER.info("Fallback zone detection for device %s: %s", mac_address, available_zones)
         
         entities = []
         for zone in available_zones:

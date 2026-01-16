@@ -43,15 +43,39 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_password(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle password and email entry."""
+        """Handle password and email entry with zone detection."""
         errors = {}
         if user_input is not None:
             try:
                 assert self._discovered_device is not None
                 self._discovered_device._email = user_input[CONF_USERNAME]
                 self._discovered_device._password = user_input[CONF_PASSWORD]
+                
+                # Validate credentials and detect zones during setup
+                # This ensures zones are properly detected before entity creation
+                if self._discovery_info:
+                    from homeassistant.components.bluetooth import async_ble_device_from_address
+                    ble_device = async_ble_device_from_address(self.hass, self._discovery_info.address)
+                    if ble_device:
+                        # Perform zone detection during credential validation
+                        available_zones = await self._discovered_device.get_available_zones(self.hass, ble_device)
+                        if available_zones:
+                            # Store detected zones in the device config for later use
+                            self._discovered_device._detected_zones = available_zones
+                            from .const import DOMAIN
+                            import logging
+                            _LOGGER = logging.getLogger(__name__)
+                            _LOGGER.info("Config flow detected %d zones during setup: %s", len(available_zones), available_zones)
+                        else:
+                            _LOGGER.warning("Config flow could not detect zones; will fallback to single zone")
+                            self._discovered_device._detected_zones = [0]
+                
                 return await self.async_step_bluetooth_confirm(user_input)
-            except Exception:
+            except Exception as e:
+                from .const import DOMAIN
+                import logging
+                _LOGGER = logging.getLogger(__name__)
+                _LOGGER.error("Credential validation or zone detection failed: %s", str(e))
                 errors["base"] = "invalid_auth"
 
         return self.async_show_form(
@@ -74,14 +98,22 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         discovery_info = self._discovery_info
         title = device.title or device.get_device_name() or discovery_info.name
         if user_input is not None:
-            return self.async_create_entry(
-                title=title,
-                data={
-                    CONF_USERNAME: self._discovered_device._email,
-                    CONF_PASSWORD: self._discovered_device._password,
-                    CONF_ADDRESS: discovery_info.address,
-                }
-            )
+            # Include detected zones in the config entry data
+            config_data = {
+                CONF_USERNAME: self._discovered_device._email,
+                CONF_PASSWORD: self._discovered_device._password,
+                CONF_ADDRESS: discovery_info.address,
+            }
+            
+            # Add detected zones if available
+            if hasattr(self._discovered_device, '_detected_zones') and self._discovered_device._detected_zones:
+                config_data['detected_zones'] = self._discovered_device._detected_zones
+                from .const import DOMAIN
+                import logging
+                _LOGGER = logging.getLogger(__name__)
+                _LOGGER.info("Storing detected zones in config entry: %s", self._discovered_device._detected_zones)
+            
+            return self.async_create_entry(title=title, data=config_data)
 
         self._set_confirm_only()
         placeholders = {"name": title}
@@ -101,6 +133,16 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             device = MicroAirEasyTouchBluetoothDeviceData(password=None, email=None)
             self._discovered_device = device
+            
+            # Create a minimal discovery info for the selected address
+            # This is needed for zone detection in the password step
+            class MockDiscoveryInfo:
+                def __init__(self, address, name):
+                    self.address = address
+                    self.name = name
+                    
+            self._discovery_info = MockDiscoveryInfo(address, self._discovered_devices.get(address, "MicroAir EasyTouch"))
+            
             return await self.async_step_password()
 
         current_addresses = self._async_current_ids()

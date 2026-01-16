@@ -148,10 +148,9 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._connected = False                    # Tracks persistent connection state
         self._connection_health_check_task = None  # Monitors connection health
         self._last_activity_time = 0.0             # Track last successful operation
-        self._connection_idle_timeout = 120.0  # Disconnect after 2 minutes of inactivity (reduced)
-        self._health_check_interval = 60.0     # Check connection health every 60 seconds
+        self._connection_idle_timeout = 120.0      # Disconnect after 2 minutes of inactivity
+        self._health_check_interval = 60.0         # Check connection health every 60 seconds
 
-        # Polling configuration and runtime state
         # Polling is enabled by default because device does not advertise full state
         self._polling_enabled: bool = True
         self._poll_interval: float = 30.0  # seconds
@@ -591,11 +590,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             self._ble_device = None
 
     async def get_available_zones(self, hass, ble_device: BLEDevice) -> list[int]:
-        """Get available zones by performing a short-lived GATT probe.
+        """Get available zones by performing a robust GATT probe.
 
-        Use a dedicated short-lived connection for probing to avoid contention
-        with any persistent connection or ongoing commands. This matches the
-        original behavior and keeps zone detection fast and reliable.
+        Use multiple probe attempts with proper timing to ensure zone detection
+        works reliably during device setup. Addresses intermittent issues where
+        only the first zone is detected on initial installation.
         """
         if ble_device is None:
             ble_device = self._ble_device
@@ -603,56 +602,89 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 _LOGGER.warning("No BLE device available to detect zones; defaulting to [0]")
                 return [0]
 
-        _LOGGER.debug("Probing device %s for available zones (short-lived connection)", ble_device.address)
+        _LOGGER.debug("Probing device %s for available zones with enhanced detection", ble_device.address)
 
-        client = None
-        try:
-            client = await establish_connection(BleakClientWithServiceCache, ble_device, ble_device.address, timeout=10.0)
-            if not client or not client.is_connected:
-                _LOGGER.warning("Short-lived probe failed to connect to %s", ble_device.address)
-                return [0]
-
-            # Perform minimal authentication if credentials are available
-            if self._password:
-                try:
-                    password_bytes = self._password.encode('utf-8')
-                    await client.write_gatt_char(UUIDS["passwordCmd"], password_bytes, response=True)
-                    _LOGGER.debug("Probe authentication sent")
-                except Exception as e:
-                    _LOGGER.debug("Probe authentication failed: %s", str(e))
-
-            # Send status request and read response
+        # Try multiple probe attempts to handle timing variability
+        for attempt in range(3):
+            client = None
             try:
-                cmd = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                await client.write_gatt_char(UUIDS["jsonCmd"], json.dumps(cmd).encode('utf-8'), response=True)
-                await asyncio.sleep(0.2)
-                payload = await client.read_gatt_char(UUIDS["jsonReturn"])
-                if payload:
+                _LOGGER.debug("Zone detection attempt %d/3", attempt + 1)
+                client = await establish_connection(BleakClientWithServiceCache, ble_device, ble_device.address, timeout=15.0)
+                if not client or not client.is_connected:
+                    _LOGGER.warning("Zone probe attempt %d failed to connect to %s", attempt + 1, ble_device.address)
+                    continue
+
+                # Perform authentication with longer delay for processing
+                if self._password:
                     try:
-                        payload_str = payload.decode('utf-8')
-                    except Exception:
-                        payload_str = repr(payload)
-                    preview, full_b64 = _format_payload_for_log(payload)
-                    _LOGGER.debug("Probe raw payload preview: %s (len=%d)", preview, len(payload))
-                    _LOGGER.debug("Probe raw payload (base64): %s", full_b64)
+                        password_bytes = self._password.encode('utf-8')
+                        await client.write_gatt_char(UUIDS["passwordCmd"], password_bytes, response=True)
+                        # Allow more time for authentication to be processed
+                        await asyncio.sleep(0.8)
+                        _LOGGER.debug("Zone probe authentication sent (attempt %d)", attempt + 1)
+                    except Exception as e:
+                        _LOGGER.debug("Zone probe authentication failed (attempt %d): %s", attempt + 1, str(e))
 
-                    decrypted = self.decrypt(payload)
-                    zones = decrypted.get('available_zones', [0])
-                    _LOGGER.info("Probe detected %d zones: %s", len(zones), zones)
-                    return zones
+                # Try different zone query approaches
+                probe_commands = [
+                    # First try: Request all zone data (no specific zone)
+                    {"Type": "Get Status", "EM": self._email, "TM": int(time.time())},
+                    # Second try: Request zone 0 data (traditional approach) 
+                    {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())},
+                ]
+
+                for cmd_index, cmd in enumerate(probe_commands):
+                    try:
+                        _LOGGER.debug("Zone probe command %d/%d (attempt %d): %s", cmd_index + 1, len(probe_commands), attempt + 1, cmd)
+                        await client.write_gatt_char(UUIDS["jsonCmd"], json.dumps(cmd).encode('utf-8'), response=True)
+                        # Give device more time to respond with complete data
+                        await asyncio.sleep(0.5)
+                        
+                        payload = await client.read_gatt_char(UUIDS["jsonReturn"])
+                        if payload:
+                            try:
+                                payload_str = payload.decode('utf-8')
+                            except Exception:
+                                payload_str = repr(payload)
+                            preview, full_b64 = _format_payload_for_log(payload)
+                            _LOGGER.debug("Zone probe response (attempt %d, cmd %d): %s (len=%d)", attempt + 1, cmd_index + 1, preview, len(payload))
+                            
+                            decrypted = self.decrypt(payload)
+                            zones = decrypted.get('available_zones', [0])
+                            _LOGGER.debug("Zone probe found zones (attempt %d, cmd %d): %s", attempt + 1, cmd_index + 1, zones)
+                            
+                            # If we found multiple zones, we're done
+                            if len(zones) > 1:
+                                _LOGGER.info("Zone probe successful: detected %d zones: %s (attempt %d)", len(zones), zones, attempt + 1)
+                                return zones
+                            # If we found at least one zone and this is the last command, use it
+                            elif zones and cmd_index == len(probe_commands) - 1:
+                                _LOGGER.info("Zone probe completed: found %d zone(s): %s (attempt %d)", len(zones), zones, attempt + 1)
+                                return zones
+
+                        else:
+                            _LOGGER.debug("No payload received for command %d (attempt %d)", cmd_index + 1, attempt + 1)
+                            
+                    except Exception as e:
+                        _LOGGER.debug("Zone probe command %d failed (attempt %d): %s", cmd_index + 1, attempt + 1, str(e))
+                        continue
+
             except Exception as e:
-                _LOGGER.debug("Probe read failed: %s", str(e))
-                return [0]
-        except Exception as e:
-            _LOGGER.debug("Probe connection failed for %s: %s", ble_device.address, str(e))
-            return [0]
-        finally:
-            try:
-                if client and client.is_connected:
-                    await client.disconnect()
-            except Exception:
-                pass
+                _LOGGER.debug("Zone probe attempt %d failed for %s: %s", attempt + 1, ble_device.address, str(e))
+            finally:
+                try:
+                    if client and client.is_connected:
+                        await client.disconnect()
+                except Exception:
+                    pass
 
+            # Wait between attempts to let device settle
+            if attempt < 2:  # Don't wait after the last attempt
+                _LOGGER.debug("Waiting before next zone probe attempt...")
+                await asyncio.sleep(1.0)
+
+        # All attempts failed, fallback to single zone
+        _LOGGER.warning("All zone detection attempts failed for %s, defaulting to single zone", ble_device.address)
         return [0]
 
     async def _process_command_queue(self, hass, ble_device: BLEDevice) -> None:
