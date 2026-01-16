@@ -68,6 +68,20 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
             model="Thermostat",
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to device data updates when entity is added to hass."""
+        self._data.async_subscribe_updates(self._handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unsubscribe from updates when entity is removed."""
+        # Note: The parser doesn't currently provide an unsubscribe method
+        # but this is here for future compatibility
+        pass
+
+    def _handle_update(self, device_state=None) -> None:
+        """Handle device state updates and refresh entity state."""
+        self.async_write_ha_state()
+
     @property
     def name(self) -> str:
         """Return dynamic name based on current state."""
@@ -129,5 +143,7 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
         if success:
             _LOGGER.info("Sent system-wide %s (mode=0, zone=%d, power=%d) to device %s", 
                         action, zone_count, new_power_state, self._mac_address)
+            # Trigger a state update to refresh name/icon
+            self.async_write_ha_state()
         else:
             _LOGGER.error("Failed to send system-wide %s to device %s", action, self._mac_address)
