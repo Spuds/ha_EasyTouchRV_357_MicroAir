@@ -67,14 +67,16 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
             manufacturer="Micro-Air",
             model="Thermostat",
         )
-        # Initialize name and icon based on current state
-        self._update_attributes()
+        # Initialize with default values - will update when device data is available
+        self._attr_name = "System Power Toggle"
+        self._attr_icon = "mdi:power"
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to device data updates when entity is added to hass."""
         self._data.async_subscribe_updates(self._handle_update)
-        # Update attributes when first added
+        # Update attributes when first added (device data should be available now)
         self._update_attributes()
+        self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from updates when entity is removed."""
@@ -89,12 +91,18 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
 
     def _update_attributes(self) -> None:
         """Update the name and icon attributes based on current device state."""
-        if self._is_unit_on():
-            self._attr_name = "All Zones Off"
-            self._attr_icon = "mdi:power-off"
-        else:
-            self._attr_name = "All Zones On"
-            self._attr_icon = "mdi:power-on"
+        try:
+            if self._is_unit_on():
+                self._attr_name = "All Zones Off"
+                self._attr_icon = "mdi:power-off"
+            else:
+                self._attr_name = "All Zones On"
+                self._attr_icon = "mdi:power-on"
+        except Exception as e:
+            _LOGGER.debug("Error updating power toggle attributes: %s", str(e))
+            # Fallback to generic names if device data isn't available
+            self._attr_name = "System Power Toggle"
+            self._attr_icon = "mdi:power"
 
     @property
     def name(self) -> str:
