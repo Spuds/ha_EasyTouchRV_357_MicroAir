@@ -61,7 +61,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         # Construct the command
         command = {
             "Type": "Get Status",
-            "Zone": 0,  # Location setting is global, not zone-specific
+            "Zone": 0, # Location setting is global, not zone-specific
             "LAT": f"{latitude:.5f}",
             "LON": f"{longitude:.5f}",
             "TM": int(time.time())
@@ -164,6 +164,111 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=SERVICE_TEST_SET_MODE_SCHEMA,
     )
 
+    # Schema and handler for requesting device status (developer testing)
+    SERVICE_TEST_GET_STATUS_SCHEMA = vol.Schema(
+        {
+            vol.Optional("address"): cv.string,
+            vol.Optional("entity_id"): cv.entity_id,
+            vol.Optional("zone", default=0): vol.All(int, vol.Range(min=0)),
+            vol.Optional("type", default="Get Status"): cv.string,
+        }
+    )
+
+    async def handle_test_get_status(call: ServiceCall) -> None:
+        """Handle the test_get_status service call (developer-only)."""
+        address = call.data.get("address")
+        entity_id = call.data.get("entity_id")
+        zone = int(call.data.get("zone", 0))
+        command_type = call.data.get("type", "Get Status")
+
+        # Resolve config entry similar to other services
+        config_entry = None
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if address and entry.unique_id == address:
+                config_entry = entry
+                break
+
+        if not config_entry and entity_id:
+            try:
+                from homeassistant.helpers import entity_registry as er
+                registry = er.async_get(hass)
+                entity = registry.async_get(entity_id)
+                if entity and entity.config_entry_id:
+                    config_entry = hass.config_entries.async_get_entry(entity.config_entry_id)
+            except Exception:
+                pass
+
+        if not config_entry and address:
+            norm = _normalize(address)
+            for entry in hass.config_entries.async_entries(DOMAIN):
+                if entry.unique_id and _normalize(str(entry.unique_id)) == norm:
+                    config_entry = entry
+                    break
+
+        if not config_entry:
+            known = [entry.unique_id for entry in hass.config_entries.async_entries(DOMAIN)]
+            _LOGGER.error(
+                "No MicroAirEasyTouch config entry found for address/entity '%s' (known entries: %s)",
+                address or entity_id,
+                known,
+            )
+            return
+
+        device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
+
+        # Determine BLE address to use
+        ble_address = address or config_entry.unique_id
+        ble_device = async_ble_device_from_address(hass, ble_address)
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for address %s", ble_address)
+            return
+
+        # Build and send command with configurable type
+        command = {
+            "Type": command_type, 
+            "Zone": zone, 
+            "EM": device_data._email, 
+            "TM": int(time.time())
+        }
+        
+        _LOGGER.info("Requesting '%s' for zone %d from device %s", command_type, zone, ble_address)
+        try:
+            success = await device_data.send_command(hass, ble_device, command)
+            if success:
+                # Read the response and log it for debugging
+                from .micro_air_easytouch.const import UUIDS
+                json_payload = await device_data._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
+                if json_payload:
+                    try:
+                        payload_str = json_payload.decode('utf-8')
+                        _LOGGER.debug("Raw status response for zone %d: %s", zone, payload_str)
+                        
+                        # Also parse and log in a more readable format
+                        parsed_data = device_data.decrypt(json_payload)
+                        _LOGGER.info("Parsed response for '%s' zone %d from device %s:", command_type, zone, ble_address)
+                        _LOGGER.info("  Available zones: %s", parsed_data.get('available_zones', 'unknown'))
+                        if 'zones' in parsed_data and zone in parsed_data['zones']:
+                            zone_data = parsed_data['zones'][zone]
+                            _LOGGER.info("  Zone %d data: %s", zone, zone_data)
+                        else:
+                            _LOGGER.info("  Full device data: %s", parsed_data)
+                    except Exception as e:
+                        _LOGGER.debug("Error decoding status response: %s", str(e))
+                        _LOGGER.debug("Raw bytes: %s", json_payload)
+                else:
+                    _LOGGER.warning("No response payload received for status request")
+            else:
+                _LOGGER.error("Failed to send status request to device %s", ble_address)
+        except Exception as e:
+            _LOGGER.error("Error requesting status from device %s: %s", ble_address, str(e))
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_get_status",
+        handle_test_get_status,
+        schema=SERVICE_TEST_GET_STATUS_SCHEMA,
+    )
+
     # Schema and handler for sending arbitrary Change commands (developer testing)
     SERVICE_TEST_SEND_CHANGES_SCHEMA = vol.Schema(
         {
@@ -249,4 +354,5 @@ async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister services for the MicroAirEasyTouch integration."""
     hass.services.async_remove(DOMAIN, "set_location")
     hass.services.async_remove(DOMAIN, "test_set_mode")
+    hass.services.async_remove(DOMAIN, "test_get_status")
     hass.services.async_remove(DOMAIN, "test_send_changes")
