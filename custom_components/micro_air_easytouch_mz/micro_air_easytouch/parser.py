@@ -271,8 +271,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
     def _notify_update(self) -> None:
         """Invoke all registered update listeners and provide the latest state.
 
-        For backward compatibility support both zero-argument callbacks and
-        single-argument callbacks that accept the full device state.
+        Also support both zero-argument callbacks and single-argument callbacks 
+        that accept the full device state.
         """
         for callback in list(self._update_listeners):
             try:
@@ -280,8 +280,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 # expect the state can receive it directly.
                 callback(self._device_state)
             except TypeError:
-                # Callback likely expects no arguments; fall back to calling
-                # without arguments for backward compatibility.
+                # Callback likely expects no arguments; fall back to calling without arguments.
                 try:
                     callback()
                 except Exception as e:
@@ -311,11 +310,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         hr_status = {}
         hr_status['SN'] = status.get('SN', 'Unknown')
         hr_status['ALL'] = status
-        # Expose PRM (parameter flags) at top level for easy access
         hr_status['PRM'] = param
-        # Expose controller id and HA indicator for debugging/diagnostics
         hr_status['CI'] = status.get('CI')
-        # Device may use 'hA' or 'HA' field; normalize to 'hA' on the parsed state
         ha_val = status.get('hA') if 'hA' in status else status.get('HA')
         hr_status['hA'] = ha_val
         
@@ -1059,12 +1055,12 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                         # Read response
                                         json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], current_ble_device)
                                         if json_payload:
-                                            preview, full_b64 = _format_payload_for_log(json_payload)
-                                            _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
-                                            _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
+                                            # preview, full_b64 = _format_payload_for_log(json_payload)
+                                            # _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
+                                            # _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
                                             # Pass bytes directly to decrypt (it accepts bytes or str)
                                             self.decrypt(json_payload)
-                                            _LOGGER.debug("Poll applied authoritative state for device %s", getattr(current_ble_device, 'address', getattr(self, '_address', None)))
+                                            # _LOGGER.debug("Poll applied authoritative state for device %s", getattr(current_ble_device, 'address', getattr(self, '_address', None)))
                                             self._last_poll_success = True
                                             self._last_poll_time = time.time()
                                             self._last_activity_time = time.time()

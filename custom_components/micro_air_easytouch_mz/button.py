@@ -55,14 +55,12 @@ class MicroAirEasyTouchRebootButton(ButtonEntity):
 
 
 class MicroAirEasyTouchAllOffButton(ButtonEntity):
-    """Button to send a system-wide OFF (power = 0) to the device."""
+    """Toggle button for system-wide power control (all zones on/off)."""
 
     def __init__(self, data: MicroAirEasyTouchBluetoothDeviceData, mac_address: str) -> None:
         self._data = data
         self._mac_address = mac_address
-        self._attr_unique_id = f"microaireasytouch_{self._mac_address}_all_off"
-        self._attr_name = "All Zones Off"
-        self._attr_icon = "mdi:power-off"
+        self._attr_unique_id = f"microaireasytouch_{self._mac_address}_power_toggle"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"MicroAirEasyTouch_{self._mac_address}")},
             name=f"EasyTouch {self._mac_address}",
@@ -70,20 +68,54 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
             model="Thermostat",
         )
 
-    async def async_press(self) -> None:
-        """Send a system-wide OFF (power=0). No confirmation.
+    @property
+    def name(self) -> str:
+        """Return dynamic name based on current state."""
+        if self._is_unit_on():
+            return "All Zones Off"
+        else:
+            return "All Zones On"
 
-        The device interprets power=0 as a system-wide power-off (all zones off).
+    @property
+    def icon(self) -> str:
+        """Return dynamic icon based on current state."""
+        if self._is_unit_on():
+            return "mdi:power-off"
+        else:
+            return "mdi:power-on"
+
+    def _is_unit_on(self) -> bool:
+        """Check if unit is currently on based on PRM[1] value."""
+        device_data = self._data.async_get_device_data()
+        prm_data = device_data.get('PRM', [])
+        if len(prm_data) > 1:
+            unit_state = prm_data[1]
+            return unit_state == 11  # 11=on, 3=off
+        return False  # Default to off if no data available
+
+    async def async_press(self) -> None:
+        """Toggle system-wide power (all zones on/off).
+
+        Checks current state from PRM[1] and toggles:
+        - If currently on (PRM[1]=11), send power=0 (turn off)
+        - If currently off (PRM[1]=3), send power=1 (turn on)
         """
-        _LOGGER.debug("All-zones off button pressed")
+        is_on = self._is_unit_on()
+        new_power_state = 0 if is_on else 1
+        action = "OFF" if is_on else "ON"
+        
+        _LOGGER.debug("Power toggle button pressed - current state: %s, setting to: %s", 
+                     "ON" if is_on else "OFF", action)
+        
         ble_device = async_ble_device_from_address(self.hass, self._mac_address)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device to send all-off: %s", self._mac_address)
+            _LOGGER.error("Could not find BLE device to send power toggle: %s", self._mac_address)
             return
-        # Send Change with power=0 (system-wide off). No zone specified intentionally.
-        cmd = {"Type": "Change", "Changes": {"power": 0}}
+        
+        # Send power command
+        cmd = {"Type": "Change", "Changes": {"power": new_power_state}}
         success = await self._data.send_command(self.hass, ble_device, cmd)
         if success:
-            _LOGGER.info("Sent system-wide OFF to device %s", self._mac_address)
+            _LOGGER.info("Sent system-wide %s to device %s", action, self._mac_address)
         else:
-            _LOGGER.error("Failed to send system-wide OFF to device %s", self._mac_address)
+            _LOGGER.error("Failed to send system-wide %s to device %s", action, self._mac_address)
