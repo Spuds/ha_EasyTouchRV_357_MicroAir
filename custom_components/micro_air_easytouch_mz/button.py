@@ -97,8 +97,8 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
         """Toggle system-wide power (all zones on/off).
 
         Checks current state from PRM[1] and toggles:
-        - If currently on (PRM[1]=11), send power=0 (turn off)
-        - If currently off (PRM[1]=3), send power=1 (turn on)
+        - If currently on (PRM[1]=11), send mode=0, power=0 (turn off)
+        - If currently off (PRM[1]=3), send mode=0, power=1 (turn on)
         """
         is_on = self._is_unit_on()
         new_power_state = 0 if is_on else 1
@@ -112,10 +112,10 @@ class MicroAirEasyTouchAllOffButton(ButtonEntity):
             _LOGGER.error("Could not find BLE device to send power toggle: %s", self._mac_address)
             return
         
-        # Send power command
-        cmd = {"Type": "Change", "Changes": {"power": new_power_state}}
+        # Send mode=0 with power state (mode 0 required for power control)
+        cmd = {"Type": "Change", "Changes": {"mode": 0, "power": new_power_state}}
         success = await self._data.send_command(self.hass, ble_device, cmd)
         if success:
-            _LOGGER.info("Sent system-wide %s to device %s", action, self._mac_address)
+            _LOGGER.info("Sent system-wide %s (mode=0, power=%d) to device %s", action, new_power_state, self._mac_address)
         else:
             _LOGGER.error("Failed to send system-wide %s to device %s", action, self._mac_address)
