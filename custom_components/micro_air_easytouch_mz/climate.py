@@ -141,6 +141,34 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             via_device=(DOMAIN, f"MicroAirEasyTouch_{mac_address}"),
         )
         self._state = {}
+        
+        # Subscribe to device updates instead of individual polling
+        self._unsubscribe_updates = self._data.async_subscribe_updates(self._handle_device_update)
+
+    def _handle_device_update(self, device_state: dict) -> None:
+        """Handle updates from the device data shared across all zones."""
+        try:
+            # Update zone-specific state from shared device state
+            if 'zones' in device_state and self._zone in device_state['zones']:
+                old_state = self._state.copy()
+                self._state = device_state['zones'][self._zone].copy()
+                
+                # Only trigger state write if something actually changed
+                if old_state != self._state:
+                    _LOGGER.debug("Zone %s state updated: %s", self._zone, 
+                                list(self._state.keys()) if self._state else "empty")
+                    self.async_write_ha_state()
+            elif self._zone == 0 and device_state:
+                # Fallback for single-zone compatibility
+                old_state = self._state.copy()
+                self._state = device_state.copy()
+                
+                if old_state != self._state:
+                    _LOGGER.debug("Zone %s state updated (fallback): %s", self._zone, 
+                                list(self._state.keys()) if self._state else "empty")
+                    self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.debug("Error updating zone %s state: %s", self._zone, str(e))
 
     @property
     def icon(self) -> str:
@@ -159,37 +187,24 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         """Return the icon to use for the current fan mode."""
         return self._FAN_MODE_ICONS.get(self.fan_mode, "mdi:fan")
 
-    async def _async_fetch_initial_state(self) -> None:
-        """Fetch the initial state from the device."""
-        ble_device = async_ble_device_from_address(self.hass, self._mac_address)
-        if not ble_device:
-            _LOGGER.error("Could not find BLE device: %s", self._mac_address)
-            self._state = {}
-            return
+    async def async_added_to_hass(self) -> None:
+        """Run when entity is added to hass."""
+        # Entity is now subscribed to updates via _handle_device_update
+        # Initial state will come from the polling loop
+        pass
 
-        message = {"Type": "Get Status", "Zone": self._zone, "EM": self._data._email, "TM": int(time.time())}
-        try:
-            if await self._data.send_command(self.hass, ble_device, message):
-                json_payload = await self._data._read_gatt_with_retry(self.hass, UUIDS["jsonReturn"], ble_device)
-                if json_payload:
-                    full_data = self._data.decrypt(json_payload.decode('utf-8'))
-                    # Get zone-specific data
-                    if 'zones' in full_data and self._zone in full_data['zones']:
-                        self._state = full_data['zones'][self._zone]
-                    else:
-                        # Fall back to root level data if zones not available (backward compatibility)
-                        self._state = full_data
-                    _LOGGER.debug("Initial state fetched for zone %s: %s", self._zone, self._state)
-                    self.async_write_ha_state()
-                else:
-                    self._state = {}
-                    _LOGGER.warning("No payload received for initial state zone %s", self._zone)
-            else:
-                self._state = {}
-                _LOGGER.warning("Failed to send command for initial state zone %s", self._zone)
-        except Exception as e:
-            _LOGGER.error("Failed to fetch initial state for zone %s: %s", self._zone, str(e))
-            self._state = {}
+    async def async_will_remove_from_hass(self) -> None:
+        """Run when entity is being removed from hass."""
+        if hasattr(self, '_unsubscribe_updates'):
+            self._unsubscribe_updates()
+
+    async def _async_fetch_initial_state(self) -> None:
+        """DEPRECATED: Fetch the initial state from the device.
+        
+        This method is no longer used. State updates come from the shared
+        polling loop to prevent connection conflicts.
+        """
+        _LOGGER.debug("_async_fetch_initial_state called for zone %s - using shared polling instead", self._zone)
 
     @property
     def current_temperature(self) -> float | None:
@@ -306,7 +321,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
             if success:
                 try:
-                    # Optimistically update setpoints in local state
+                    # Optimistically update set-points in local state
                     if "cool_sp" in changes:
                         self._state["cool_sp"] = changes["cool_sp"]
                     if "heat_sp" in changes:
@@ -318,12 +333,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     if "autoHeat_sp" in changes:
                         self._state["autoHeat_sp"] = changes["autoHeat_sp"]
                     self.async_write_ha_state()
+                    _LOGGER.debug("Temperature set successfully for zone %s, immediate status update applied", self._zone)
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic temperature update: %s", str(e))
-                try:
-                    asyncio.create_task(self._async_fetch_initial_state())
-                except Exception:
-                    pass
+                # Note: Command execution automatically reads response for immediate verification
             else:
                 _LOGGER.warning("Failed to set temperature for zone %s", self._zone)
 
@@ -357,12 +370,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     else:
                         self._state["on"] = True
                     self.async_write_ha_state()
+                    _LOGGER.debug("HVAC mode set successfully for zone %s, immediate status update applied", self._zone)
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic hvac_mode update: %s", str(e))
-                try:
-                    asyncio.create_task(self._async_fetch_initial_state())
-                except Exception:
-                    pass
+                # Note: Command execution automatically reads response for immediate verification
             else:
                 _LOGGER.warning("Failed to set HVAC mode for zone %s", self._zone)
 
@@ -391,12 +402,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     # Optimistically set expected fan mode in local state
                     self._state["fan_mode_num"] = fan_value
                     self.async_write_ha_state()
+                    _LOGGER.debug("Fan-only mode set successfully for zone %s, immediate status update applied", self._zone)
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan-only update: %s", str(e))
-                try:
-                    asyncio.create_task(self._async_fetch_initial_state())
-                except Exception:
-                    pass
+                # Note: Command execution automatically reads response for immediate verification
             else:
                 _LOGGER.warning("Failed to set fan-only mode for zone %s", self._zone)
         else:
@@ -438,12 +447,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     elif self.hvac_mode == HVACMode.AUTO:
                         self._state["auto_fan_mode_num"] = fan_value
                     self.async_write_ha_state()
+                    _LOGGER.debug("Fan mode set successfully for zone %s, immediate status update applied", self._zone)
                 except Exception as e:
                     _LOGGER.debug("Failed to apply optimistic fan update: %s", str(e))
-                try:
-                    asyncio.create_task(self._async_fetch_initial_state())
-                except Exception:
-                    pass
+                # Note: Command execution automatically reads response for immediate verification
             else:
                 _LOGGER.warning("Failed to set fan mode for zone %s", self._zone)
 
@@ -451,7 +458,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     def extra_state_attributes(self) -> dict:
         """Return additional state attributes."""
         attrs: dict = {}
-        # Expose raw fields useful for debugging and automations
+        # Expose raw fields useful for debugging and automation
         for k in (
             "mode_num",
             "current_mode_num",

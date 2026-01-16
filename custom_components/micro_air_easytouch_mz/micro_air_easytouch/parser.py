@@ -15,12 +15,12 @@ from bleak_retry_connector import (
     establish_connection,
     retry_bluetooth_connection_error,
 )
-
 from bluetooth_data_tools import short_address
 from bluetooth_sensor_state_data import BluetoothData
 from home_assistant_bluetooth import BluetoothServiceInfo
 from sensor_state_data.enum import StrEnum
 
+# Local imports for constants and domain-specific functionality
 from ..const import DOMAIN
 from .const import UUIDS, FAN_MODES_FULL, FAN_MODES_FAN_ONLY
 
@@ -95,7 +95,7 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
             # JSON parse failed or Z_sts absent; fall back
             pass
 
-        # Fallback: use repr of decoded text so nonprintables are visible
+        # Fallback: use repr of decoded text so non-printable characters are visible
         try:
             text = data_bytes.decode('utf-8', errors='replace')
         except Exception:
@@ -138,10 +138,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._update_listeners: list[callable] = []
 
         # Synchronization primitives for multi-zone safety
-        self._client_lock = asyncio.Lock()      # Prevents concurrent connection modifications
-        self._command_queue = asyncio.Queue()   # FIFO command execution
-        self._queue_worker_task = None          # Manages queue processing
-        self._connected = False                 # Tracks persistent connection state
+        self._client_lock = asyncio.Lock()         # Prevents concurrent connection modifications
+        self._command_queue = asyncio.Queue()      # FIFO command execution
+        self._queue_worker_task = None             # Manages queue processing
+        self._connected = False                    # Tracks persistent connection state
+        self._connection_health_check_task = None  # Monitors connection health
+        self._last_activity_time = 0.0             # Track last successful operation
+        self._connection_idle_timeout = 300.0      # Disconnect after 5 minutes of inactivity
 
         # Polling configuration and runtime state
         # Polling is enabled by default because device does not advertise full state
@@ -150,6 +153,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._poll_task: asyncio.Task | None = None
         self._last_poll_success: bool = False
         self._last_poll_time: float | None = None
+        self._poll_in_progress = False # Prevent poll/command conflicts
 
     def _get_operation_delay(self, hass, address: str, operation: str) -> float:
         """Calculate delay for specific operations from persistent storage."""
@@ -595,6 +599,198 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         return [0]
 
+    async def _process_command_queue(self, hass, ble_device: BLEDevice) -> None:
+        """Process commands from the queue serially to prevent device conflicts.
+        
+        This worker ensures all commands are executed in FIFO order with proper
+        connection management and error handling.
+        """
+        _LOGGER.debug("Command queue worker started")
+        try:
+            while True:
+                try:
+                    # Wait for next command with timeout
+                    command_item = await asyncio.wait_for(self._command_queue.get(), timeout=60.0)
+                    
+                    # Execute command with connection management
+                    result = await self._execute_command_safely(hass, ble_device, command_item['command'])
+                    
+                    # Return result to caller
+                    if not command_item['result_future'].done():
+                        command_item['result_future'].set_result(result)
+                    
+                    # Mark queue task as done
+                    self._command_queue.task_done()
+                    
+                    # Small delay between commands to prevent overwhelming device
+                    await asyncio.sleep(0.1)
+                    
+                except asyncio.TimeoutError:
+                    # No commands for 60 seconds, check if we should keep connection alive
+                    if time.time() - self._last_activity_time > self._connection_idle_timeout:
+                        await self._disconnect_safely()
+                    continue
+                except Exception as e:
+                    _LOGGER.error("Error in command queue worker: %s", str(e))
+                    # Try to set error on pending command if available
+                    try:
+                        if not command_item['result_future'].done():
+                            command_item['result_future'].set_result(False)
+                        self._command_queue.task_done()
+                    except:
+                        pass
+                    await asyncio.sleep(1.0)  # Brief recovery delay
+        except asyncio.CancelledError:
+            _LOGGER.debug("Command queue worker cancelled")
+            # Clean up any remaining commands
+            while not self._command_queue.empty():
+                try:
+                    item = self._command_queue.get_nowait()
+                    if not item['result_future'].done():
+                        item['result_future'].set_result(False)
+                    self._command_queue.task_done()
+                except:
+                    break
+            raise
+        finally:
+            await self._disconnect_safely()
+
+    async def _execute_command_safely(self, hass, ble_device: BLEDevice, command: dict) -> bool:
+        """Execute a single command with proper connection and error handling.
+        
+        Automatically reads status response after commands to provide immediate
+        UI feedback while maintaining thread-safe execution.
+        """
+        async with self._client_lock:
+            try:
+                # Ensure we have a valid connection
+                if not await self._ensure_connected(hass, ble_device):
+                    return False
+                
+                # Send command
+                command_bytes = json.dumps(command).encode()
+                if not await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device):
+                    return False
+                
+                # For change commands, immediately read response to provide instant UI feedback
+                if command.get("Type") == "Change":
+                    try:
+                        # Small delay to let device process the command
+                        await asyncio.sleep(0.1)
+                        
+                        # Read the response and update state immediately
+                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], ble_device)
+                        if json_payload:
+                            preview, full_b64 = _format_payload_for_log(json_payload)
+                            _LOGGER.debug("Command response preview: %s (len=%d)", preview, len(json_payload))
+                            _LOGGER.debug("Command response (base64): %s", full_b64)
+                            
+                            # Apply immediate state update for responsive UI
+                            self.decrypt(json_payload)
+                            _LOGGER.debug("Applied immediate status update after command")
+                        else:
+                            _LOGGER.debug("No response payload after command")
+                    except Exception as e:
+                        _LOGGER.debug("Error reading immediate response (will rely on polling): %s", str(e))
+                
+                # Update activity timestamp
+                self._last_activity_time = time.time()
+                return True
+                
+            except Exception as e:
+                _LOGGER.error("Failed to execute command safely: %s", str(e))
+                # Force disconnect on errors to ensure clean state
+                await self._disconnect_safely()
+                return False
+
+    async def _ensure_connected(self, hass, ble_device: BLEDevice) -> bool:
+        """Ensure we have a valid, authenticated connection."""
+        try:
+            # Check if current connection is valid
+            if self._client and self._client.is_connected:
+                # Verify connection is actually working
+                if hasattr(self._client, 'services') and self._client.services:
+                    return True
+                else:
+                    _LOGGER.debug("Connection has no services, reconnecting")
+                    await self._disconnect_safely()
+            
+            # Need to establish new connection
+            _LOGGER.debug("Establishing new persistent connection")
+            
+            connect_delay = self._get_operation_delay(hass, ble_device.address, 'connect')
+            if connect_delay > 0:
+                await asyncio.sleep(connect_delay)
+            
+            self._client = await self._connect_to_device(ble_device)
+            if not self._client or not self._client.is_connected:
+                self._increase_operation_delay(hass, ble_device.address, 'connect')
+                return False
+            
+            # Authenticate
+            auth_delay = self._get_operation_delay(hass, ble_device.address, 'auth')
+            if auth_delay > 0:
+                await asyncio.sleep(auth_delay)
+            
+            if not await self.authenticate(self._password):
+                self._increase_operation_delay(hass, ble_device.address, 'auth')
+                await self._disconnect_safely()
+                return False
+            
+            # Success - reset delays and mark as connected
+            self._adjust_operation_delay(hass, ble_device.address, 'connect')
+            self._adjust_operation_delay(hass, ble_device.address, 'auth')
+            self._connected = True
+            self._last_activity_time = time.time()
+            
+            _LOGGER.debug("Persistent connection established successfully")
+            return True
+            
+        except Exception as e:
+            _LOGGER.error("Failed to ensure connection: %s", str(e))
+            await self._disconnect_safely()
+            return False
+
+    async def _disconnect_safely(self) -> None:
+        """Safely disconnect and clean up connection state."""
+        try:
+            if self._client and self._client.is_connected:
+                await self._client.disconnect()
+                _LOGGER.debug("Disconnected from device safely")
+        except Exception as e:
+            _LOGGER.debug("Error during safe disconnect: %s", str(e))
+        finally:
+            self._client = None
+            self._connected = False
+
+    async def async_shutdown(self) -> None:
+        """Clean shutdown of all tasks and connections."""
+        _LOGGER.debug("Shutting down MicroAirEasyTouch device data")
+        
+        # Stop polling
+        await self.stop_polling()
+        
+        # Stop queue worker
+        if self._queue_worker_task and not self._queue_worker_task.done():
+            self._queue_worker_task.cancel()
+            try:
+                await self._queue_worker_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Stop health check task
+        if self._connection_health_check_task and not self._connection_health_check_task.done():
+            self._connection_health_check_task.cancel()
+            try:
+                await self._connection_health_check_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Clean disconnect
+        await self._disconnect_safely()
+        
+        _LOGGER.debug("Device shutdown complete")
+
     def start_polling(self, hass, startup_delay: float = 1.0, address: str | None = None) -> None:
         """Start background polling loop (non-blocking) with a configurable startup delay.
 
@@ -635,11 +831,24 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._poll_task = None
 
     async def _poll_loop(self, hass) -> None:
-        """Continuously poll the device for full status and update internal state."""
+        """Continuously poll the device for full status and update internal state.
+        
+        This polling loop respects the command queue to prevent conflicts and
+        uses the persistent connection when available.
+        """
         _LOGGER.debug("Poll loop running")
         try:
             while True:
                 try:
+                    # Skip this poll iteration if commands are being processed
+                    if not self._command_queue.empty():
+                        _LOGGER.debug("Skipping poll - commands in queue")
+                        await asyncio.sleep(self._poll_interval / 4)  # Check again sooner
+                        continue
+                    
+                    # Mark polling in progress to prevent conflicts
+                    self._poll_in_progress = True
+                    
                     # If we don't have a BLEDevice from advertisements, try to resolve it by stored address
                     if not self._ble_device and getattr(self, "_address", None):
                         try:
@@ -654,51 +863,79 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                         _LOGGER.debug("No BLE device known, skipping poll iteration")
                         self._last_poll_success = False
                     else:
-                        message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
-                        sent = await self.send_command(hass, self._ble_device, message)
-                        if sent:
-                            json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
-                            if json_payload:
-                                preview, full_b64 = _format_payload_for_log(json_payload)
-                                _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
-                                _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
-                                # Pass bytes directly to decrypt (it accepts bytes or str)
-                                self.decrypt(json_payload)
-                                _LOGGER.debug("Poll applied authoritative state for device %s", getattr(self._ble_device, 'address', getattr(self, '_address', None)))
-                                self._last_poll_success = True
-                                self._last_poll_time = time.time()
-                            else:
-                                _LOGGER.debug("Poll read returned no payload")
+                        # Use the persistent connection for polling if available
+                        async with self._client_lock:
+                            try:
+                                if await self._ensure_connected(hass, self._ble_device):
+                                    # Send status request
+                                    message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
+                                    command_bytes = json.dumps(message).encode()
+                                    
+                                    if await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, self._ble_device):
+                                        # Read response
+                                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
+                                        if json_payload:
+                                            preview, full_b64 = _format_payload_for_log(json_payload)
+                                            _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
+                                            _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
+                                            # Pass bytes directly to decrypt (it accepts bytes or str)
+                                            self.decrypt(json_payload)
+                                            _LOGGER.debug("Poll applied authoritative state for device %s", getattr(self._ble_device, 'address', getattr(self, '_address', None)))
+                                            self._last_poll_success = True
+                                            self._last_poll_time = time.time()
+                                            self._last_activity_time = time.time()
+                                        else:
+                                            _LOGGER.debug("Poll read returned no payload")
+                                            self._last_poll_success = False
+                                    else:
+                                        _LOGGER.debug("Poll send_command failed")
+                                        self._last_poll_success = False
+                                else:
+                                    _LOGGER.debug("Poll failed to establish connection")
+                                    self._last_poll_success = False
+                            except Exception as e:
+                                _LOGGER.debug("Error during poll execution: %s", str(e))
                                 self._last_poll_success = False
-                        else:
-                            _LOGGER.debug("Poll send_command failed")
-                            self._last_poll_success = False
+                
                 except Exception as e:
                     _LOGGER.debug("Error during poll iteration: %s", str(e))
                     self._last_poll_success = False
+                finally:
+                    self._poll_in_progress = False
+                
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             _LOGGER.info("Poll loop cancelled")
             raise
+        finally:
+            self._poll_in_progress = False
             
     async def send_command(self, hass, ble_device: BLEDevice, command: dict) -> bool:
-        """Send command to device."""
+        """Send command to device using persistent connection and command queue.
+        
+        This method ensures thread-safe command execution and maintains a
+        persistent connection to prevent device instability from connection thrashing.
+        """
+        # Start the queue worker if not already running
+        if not self._queue_worker_task or self._queue_worker_task.done():
+            self._queue_worker_task = asyncio.create_task(self._process_command_queue(hass, ble_device))
+        
+        # Queue the command for serialized execution
+        result_future = asyncio.Future()
+        command_item = {
+            'command': command,
+            'result_future': result_future,
+            'timestamp': time.time()
+        }
+        
+        await self._command_queue.put(command_item)
+        
         try:
-            if not self._client or not self._client.is_connected:
-                self._client = await self._connect_to_device(ble_device)
-                if not self._client or not self._client.is_connected:
-                    return False
-                if not await self.authenticate(self._password):
-                    return False
-            command_bytes = json.dumps(command).encode()
-            return await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, ble_device)
-        except Exception as e:
-            _LOGGER.error("Error sending command: %s", str(e))
+            # Wait for command to be processed with timeout
+            return await asyncio.wait_for(result_future, timeout=30.0)
+        except asyncio.TimeoutError:
+            _LOGGER.error("Command timeout after 30s: %s", command)
             return False
-        finally:
-            try:
-                if self._client and self._client.is_connected:
-                    await self._client.disconnect()
-            except Exception as e:
-                _LOGGER.debug("Error disconnecting: %s", str(e))
-            self._client = None
+        except Exception as e:
+            _LOGGER.error("Command execution failed: %s", str(e))
+            return False
