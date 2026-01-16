@@ -53,6 +53,9 @@ async def async_setup_entry(
         async_add_entities([entity])
         return
     
+    # Store the BLE device for persistent use
+    data.set_ble_device(ble_device)
+    
     # Probe device for available zones
     try:
         available_zones = await data.get_available_zones(hass, ble_device)

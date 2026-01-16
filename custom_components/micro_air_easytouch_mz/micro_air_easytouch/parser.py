@@ -137,6 +137,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         # that takes no arguments and is invoked when device state changes.
         self._update_listeners: list[callable] = []
 
+        # Store BLE device object for persistence across operations
+        self._stored_ble_device: BLEDevice | None = None
+        self._stored_address: str | None = None
+
         # Synchronization primitives for multi-zone safety
         self._client_lock = asyncio.Lock()         # Prevents concurrent connection modifications
         self._command_queue = asyncio.Queue()      # FIFO command execution
@@ -213,6 +217,37 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 pass
 
         return _unsubscribe
+
+    def set_ble_device(self, ble_device: BLEDevice) -> None:
+        """Store BLE device object for persistent use."""
+        self._stored_ble_device = ble_device
+        self._stored_address = ble_device.address if ble_device else None
+        self._ble_device = ble_device  # Keep existing reference too
+        _LOGGER.debug("Stored BLE device %s for persistent use", self._stored_address)
+
+    def get_ble_device(self, hass) -> BLEDevice | None:
+        """Get stored BLE device or try to resolve it."""
+        # First try stored device
+        if self._stored_ble_device:
+            return self._stored_ble_device
+        
+        # Try current device reference
+        if self._ble_device:
+            return self._ble_device
+        
+        # Try to resolve from stored address
+        if self._stored_address:
+            from homeassistant.components.bluetooth import async_ble_device_from_address
+            try:
+                device = async_ble_device_from_address(hass, self._stored_address)
+                if device:
+                    self._stored_ble_device = device
+                    self._ble_device = device
+                    return device
+            except Exception:
+                pass
+        
+        return None
 
     def _notify_update(self) -> None:
         """Invoke all registered update listeners and provide the latest state.
@@ -613,10 +648,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     # Wait for next command with timeout
                     command_item = await asyncio.wait_for(self._command_queue.get(), timeout=60.0)
                     
-                    # If we don't have a valid BLE device, try to resolve it
-                    current_ble_device = ble_device
-                    if not current_ble_device and hasattr(self, '_address'):
-                        current_ble_device = await self._resolve_ble_device_with_retry(hass, self._address)
+                    # Get the best available BLE device
+                    current_ble_device = self.get_ble_device(hass)
+                    if not current_ble_device:
+                        # Try the originally provided device as fallback
+                        current_ble_device = ble_device
                     
                     if not current_ble_device:
                         _LOGGER.error("No BLE device available for command execution")
@@ -929,34 +965,36 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     # Mark polling in progress to prevent conflicts
                     self._poll_in_progress = True
                     
-                    # If we don't have a BLEDevice from advertisements, try to resolve it by stored address
-                    if not self._ble_device and getattr(self, "_address", None):
-                        self._ble_device = await self._resolve_ble_device_with_retry(hass, self._address)
-                        if self._ble_device:
-                            _LOGGER.debug("Resolved BLE device %s for polling", self._address)
+                    # Get the best available BLE device
+                    current_ble_device = self.get_ble_device(hass)
+                    if not current_ble_device and getattr(self, "_address", None):
+                        # Try to resolve by address as fallback
+                        current_ble_device = await self._resolve_ble_device_with_retry(hass, self._address)
+                        if current_ble_device:
+                            self.set_ble_device(current_ble_device)
 
-                    if not self._ble_device:
+                    if not current_ble_device:
                         _LOGGER.debug("No BLE device known, skipping poll iteration")
                         self._last_poll_success = False
                     else:
                         # Use the persistent connection for polling if available
                         async with self._client_lock:
                             try:
-                                if await self._ensure_connected(hass, self._ble_device):
+                                if await self._ensure_connected(hass, current_ble_device):
                                     # Send status request
                                     message = {"Type": "Get Status", "Zone": 0, "EM": self._email, "TM": int(time.time())}
                                     command_bytes = json.dumps(message).encode()
                                     
-                                    if await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, self._ble_device):
+                                    if await self._write_gatt_with_retry(hass, UUIDS["jsonCmd"], command_bytes, current_ble_device):
                                         # Read response
-                                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], self._ble_device)
+                                        json_payload = await self._read_gatt_with_retry(hass, UUIDS["jsonReturn"], current_ble_device)
                                         if json_payload:
                                             preview, full_b64 = _format_payload_for_log(json_payload)
                                             _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
                                             _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
                                             # Pass bytes directly to decrypt (it accepts bytes or str)
                                             self.decrypt(json_payload)
-                                            _LOGGER.debug("Poll applied authoritative state for device %s", getattr(self._ble_device, 'address', getattr(self, '_address', None)))
+                                            _LOGGER.debug("Poll applied authoritative state for device %s", getattr(current_ble_device, 'address', getattr(self, '_address', None)))
                                             self._last_poll_success = True
                                             self._last_poll_time = time.time()
                                             self._last_activity_time = time.time()
@@ -992,6 +1030,10 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         This method ensures thread-safe command execution and maintains a
         persistent connection to prevent device instability from connection thrashing.
         """
+        # Store the BLE device for future use
+        if ble_device:
+            self.set_ble_device(ble_device)
+        
         # Start the queue worker if not already running
         if not self._queue_worker_task or self._queue_worker_task.done():
             self._queue_worker_task = asyncio.create_task(self._process_command_queue(hass, ble_device))
