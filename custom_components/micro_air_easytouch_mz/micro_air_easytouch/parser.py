@@ -225,6 +225,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         self._ble_device = ble_device  # Keep existing reference too
         _LOGGER.debug("Stored BLE device %s for persistent use", self._stored_address)
 
+    def set_device_address(self, address: str) -> None:
+        """Store device address for creating minimal BLE devices when needed."""
+        self._stored_address = address
+        _LOGGER.debug("Stored device address %s for minimal device creation", address)
+
     def get_ble_device(self, hass) -> BLEDevice | None:
         """Get stored BLE device or try to resolve it."""
         # First try stored device
@@ -246,6 +251,21 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     return device
             except Exception:
                 pass
+            
+            # If Home Assistant can't find the device, create a minimal one for connection attempts
+            # This allows us to try to wake up devices that have gone into low-power mode
+            try:
+                from bleak import BLEDevice
+                minimal_device = BLEDevice(
+                    address=self._stored_address,
+                    name="EasyTouch",  # Generic name
+                    details={},
+                    rssi=-60  # Reasonable default
+                )
+                _LOGGER.debug("Created minimal BLE device for %s (device may be in low-power mode)", self._stored_address)
+                return minimal_device
+            except Exception as e:
+                _LOGGER.debug("Failed to create minimal BLE device: %s", str(e))
         
         return None
 

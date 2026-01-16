@@ -26,6 +26,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     email = entry.data.get(CONF_USERNAME)
     data = MicroAirEasyTouchBluetoothDeviceData(password=password, email=email)
 
+    # Store the device address for persistent connection attempts
+    data.set_device_address(address)
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"data": data}
 
     # Start polling by default so we can obtain full status for devices that do not advertise

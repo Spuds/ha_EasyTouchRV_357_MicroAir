@@ -52,7 +52,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         mac_address = config_entry.unique_id
         assert mac_address is not None
 
-        # Get BLE device - try stored device first, then fresh lookup
+        # Get BLE device - try stored device first, then fresh lookup, then minimal device
         ble_device = device_data.get_ble_device(hass)
         if not ble_device:
             ble_device = async_ble_device_from_address(hass, mac_address)
@@ -60,7 +60,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 device_data.set_ble_device(ble_device)
         
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode or disconnected", mac_address)
+            _LOGGER.warning("Could not find BLE device for address %s - attempting connection with minimal device", mac_address)
+            # The get_ble_device method will create a minimal device if it has the address stored
+            ble_device = device_data.get_ble_device(hass)
+        
+        if not ble_device:
+            _LOGGER.error("Could not create any BLE device reference for address %s", mac_address)
             return
 
         # Construct the command
@@ -144,7 +149,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use and get stored device
+        # Determine BLE address to use and get stored device with fallback
         ble_address = address or config_entry.unique_id
         ble_device = device_data.get_ble_device(hass)
         if not ble_device:
@@ -153,7 +158,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 device_data.set_ble_device(ble_device)
         
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode or disconnected", ble_address)
+            _LOGGER.warning("Could not find BLE device for address %s - attempting connection with minimal device", ble_address)
+            # Ensure address is stored for minimal device creation
+            device_data.set_device_address(ble_address)
+            ble_device = device_data.get_ble_device(hass)
+        
+        if not ble_device:
+            _LOGGER.error("Could not create any BLE device reference for address %s", ble_address)
             return
 
         # Build and send raw Change command
@@ -226,7 +237,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use and get stored device
+        # Determine BLE address to use and get stored device with fallback
         ble_address = address or config_entry.unique_id
         ble_device = device_data.get_ble_device(hass)
         if not ble_device:
@@ -235,7 +246,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 device_data.set_ble_device(ble_device)
         
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode or disconnected", ble_address)
+            _LOGGER.warning("Could not find BLE device for address %s - attempting connection with minimal device", ble_address)
+            # Ensure address is stored for minimal device creation
+            device_data.set_device_address(ble_address)
+            ble_device = device_data.get_ble_device(hass)
+        
+        if not ble_device:
+            _LOGGER.error("Could not create any BLE device reference for address %s", ble_address)
             return
 
         # Build and send command with configurable type
@@ -336,7 +353,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         device_data: MicroAirEasyTouchBluetoothDeviceData = hass.data[DOMAIN][config_entry.entry_id]["data"]
 
-        # Determine BLE address to use and get stored device
+        # Determine BLE address to use and get stored device with fallback
         ble_address = address or config_entry.unique_id
         ble_device = device_data.get_ble_device(hass)
         if not ble_device:
@@ -345,7 +362,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 device_data.set_ble_device(ble_device)
         
         if not ble_device:
-            _LOGGER.error("Could not find BLE device for address %s - device may be in low-power mode or disconnected", ble_address)
+            _LOGGER.warning("Could not find BLE device for address %s - attempting connection with minimal device", ble_address)
+            # Ensure address is stored for minimal device creation
+            device_data.set_device_address(ble_address)
+            ble_device = device_data.get_ble_device(hass)
+        
+        if not ble_device:
+            _LOGGER.error("Could not create any BLE device reference for address %s", ble_address)
             return
 
         # Build and send custom Change command with arbitrary changes
