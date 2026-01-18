@@ -292,6 +292,32 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             return "auto"
 
         # Use direct mapping from numeric value to Home Assistant fan mode
+        # But first check for autonomous furnace mode special case
+        current_mode_num = self._state.get("mode_num", 1)
+        available_speeds = self._data.get_available_fan_speeds(
+            self._zone, current_mode_num
+        )
+
+        # Special handling for autonomous furnace (speeds [0, 1] only)
+        if set(available_speeds) == {0, 1}:
+            # This is an autonomous furnace - ignore reported fan_mode_num and use simplified logic
+            if fan_mode_num == 0:
+                _LOGGER.debug(
+                    "Zone %d autonomous furnace fan_mode: fan_mode_num=%s -> 'off'",
+                    self._zone,
+                    fan_mode_num,
+                )
+                return "off"
+            else:
+                # Any non-zero value represents autonomous operation
+                _LOGGER.debug(
+                    "Zone %d autonomous furnace fan_mode: fan_mode_num=%s -> 'low' (autonomous on)",
+                    self._zone,
+                    fan_mode_num,
+                )
+                return "low"  # Represents autonomous operation
+
+        # Normal mapping for other modes
         for ha_mode, numeric_values in FAN_MODE_REVERSE_MAP.items():
             if fan_mode_num in numeric_values:
                 _LOGGER.debug(
@@ -368,11 +394,20 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
         # Map device fan speeds to HA fan mode names
         fan_mode_names = []
+
+        # Special case: Check if this is autonomous furnace mode (FA=32: speeds [0,1] only)
+        is_autonomous_furnace = set(available_speeds) == {0, 1}
+
         for speed in available_speeds:
             if speed == 0:
                 fan_mode_names.append("off")
             elif speed == 1:
-                fan_mode_names.append("low")
+                if is_autonomous_furnace:
+                    # For autonomous furnace, speed 1 represents "autonomous operation"
+                    # We'll use "low" but it represents full autonomous operation, not low speed
+                    fan_mode_names.append("low")
+                else:
+                    fan_mode_names.append("low")
             elif speed == 2:
                 fan_mode_names.append("high")
             elif speed == 3:
@@ -631,15 +666,34 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             }
             success = await self._data.send_command(self.hass, ble_device, message)
 
-            # Optimistically update local state for immediate UI feedback and schedule a verification fetch
+            # Optimistically update local state for immediate UI feedback
             if success:
                 try:
                     # Set expected local state so UI updates immediately
+                    old_hvac_mode = self.hvac_mode
                     self._state["mode_num"] = mode
                     if hvac_mode == HVACMode.OFF:
                         self._state["off"] = True
                     else:
                         self._state["on"] = True
+
+                    # Clear fan mode state when changing HVAC modes to let device determine appropriate fan mode
+                    # This prevents validation errors when switching between modes with different fan capabilities
+                    if old_hvac_mode != hvac_mode:
+                        # Clear mode-specific fan state so it gets refreshed from device
+                        for fan_key in [
+                            "fan_mode_num",
+                            "cool_fan_mode_num",
+                            "heat_fan_mode_num",
+                            "auto_fan_mode_num",
+                        ]:
+                            self._state.pop(fan_key, None)
+                        _LOGGER.debug(
+                            "HVAC mode changed from %s to %s, cleared fan mode state for refresh",
+                            old_hvac_mode,
+                            hvac_mode,
+                        )
+
                     self.async_write_ha_state()
                     _LOGGER.debug(
                         "HVAC mode set successfully for zone %s, immediate status update applied",
@@ -673,9 +727,14 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             )
             return
 
-        ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+        ble_device = self._data.get_ble_device(self.hass)
         if not ble_device:
-            _LOGGER.error("Could not find BLE device")
+            ble_device = async_ble_device_from_address(self.hass, self._mac_address)
+            if ble_device:
+                self._data.set_ble_device(ble_device)
+
+        if not ble_device:
+            _LOGGER.error("Could not find BLE device for fan mode change")
             return
 
         # Map standard name to device value and validate

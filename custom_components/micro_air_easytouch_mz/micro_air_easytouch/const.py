@@ -59,6 +59,7 @@ HEAT_TYPE_PRESETS = {
 }
 HEAT_TYPE_REVERSE = {v: k for k, v in HEAT_TYPE_PRESETS.items()}
 
+# Map fan modes to possible HA codes
 FAN_MODE_REVERSE_MAP = {
     "off": [0],
     "low": [1, 65],
