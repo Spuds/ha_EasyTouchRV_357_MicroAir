@@ -49,7 +49,6 @@ FAN_MODES_FAN_ONLY = {
     "high": 2,  # manualH
 }
 
-
 # Heat type preset mappings
 HEAT_TYPE_PRESETS = {
     "Heat Pump": 5,

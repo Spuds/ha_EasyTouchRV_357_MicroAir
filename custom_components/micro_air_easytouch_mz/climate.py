@@ -400,7 +400,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         if self.hvac_mode != HVACMode.HEAT:
             return []
 
-        available_presets = [PRESET_NONE]
+        available_presets = []
         for preset_name, mode_num in HEAT_TYPE_PRESETS.items():
             if self._data.is_mode_available(self._zone, mode_num):
                 available_presets.append(preset_name)
