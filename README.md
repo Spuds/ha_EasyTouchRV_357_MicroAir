@@ -105,19 +105,6 @@ This means the Home Assistant UI will only show controls that your specific devi
 - Some advanced fan modes may not have Home Assistant equivalents
 - Zone detection requires device to be powered on during setup
 
-## Architecture & Reliability
-
-### Bluetooth Stability Design
-- **Single Persistent Connection**: Shared across all zones to prevent conflicts
-- **Command Queue**: FIFO execution with proper serialization
-- **Health Monitoring**: Automatic connection health checks every 60 seconds  
-- **Error Recovery**: Comprehensive retry logic with adaptive delays
-
-### Performance Optimizations
-- **Background Polling**: Regular device status updates every 30 seconds
-- **Configuration Caching**: Device capabilities cached to prevent repeated queries
-- **Optimistic Updates**: UI updates immediately while verifying in background
-
 ## Troubleshooting
 
 ### Debug Logging
@@ -131,14 +118,13 @@ logger:
 ### Common Issues
 - **Connection Timeout**: Ensure device is powered and in range
 - **Authentication Failed**: Verify email/password credentials
-- **Missing Modes**: Check device MAV configuration - some modes may be disabled
+- **Missing Modes**: Check your device MAV configuration - some modes may be disabled
 - **Slow Response**: Normal behavior - device protocol requires 1-2 second delays to validate the sent command was successful.  The command is sent right away, but the system must wait to see if it was "accepted"
 
 ### Device Reset
 If the device becomes unresponsive, use the reboot service or power cycle the device.
 
 ## Contributing
-
 Issues, feature requests, and pull requests are welcome.
 
 ---

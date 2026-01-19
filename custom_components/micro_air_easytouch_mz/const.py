@@ -25,3 +25,12 @@ HVAC_MODE_ICONS = {
     HVACMode.FAN_ONLY: "mdi:fan",
     HVACMode.DRY: "mdi:water-percent",
 }
+
+# Map heat preset modes (heat source types) to icons
+PRESET_MODE_ICONS = {
+    "Heat Pump": "mdi:heat-pump",
+    "Gas Furnace": "mdi:gas-burner",
+    "Furnace": "mdi:gas-burner",
+    "Heat Strip": "mdi:radiator",
+    "Electric Heat": "mdi:heat-wave",
+}

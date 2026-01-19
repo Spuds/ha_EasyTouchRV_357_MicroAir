@@ -20,7 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 
-from .const import DOMAIN, FAN_MODE_ICONS, HVAC_MODE_ICONS
+from .const import DOMAIN, FAN_MODE_ICONS, HVAC_MODE_ICONS, PRESET_MODE_ICONS
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 from .micro_air_easytouch.const import (
     HA_MODE_TO_EASY_MODE,
@@ -162,6 +162,15 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def icon(self) -> str:
         """Return the entity icon."""
+        # Prefer preset-specific icons when in heat mode with a selected preset
+        try:
+            if self.hvac_mode == HVACMode.HEAT:
+                preset = self.preset_mode
+                if preset and preset in PRESET_MODE_ICONS:
+                    return PRESET_MODE_ICONS.get(self.preset_mode, "mdi:heat-wave")
+        except Exception:
+            # Fallback to hvac icon if preset retrieval fails
+            pass
         return HVAC_MODE_ICONS.get(self.hvac_mode, "mdi:thermostat")
 
     @property
@@ -292,30 +301,19 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             return "auto"
 
         # Use direct mapping from numeric value to Home Assistant fan mode
-        # But first check for autonomous furnace mode special case
         current_mode_num = self._state.get("mode_num", 1)
         available_speeds = self._data.get_available_fan_speeds(
             self._zone, current_mode_num
         )
 
         # Special handling for autonomous furnace (speeds [0, 1] only)
-        if set(available_speeds) == {0, 1}:
+        if set(available_speeds) == {0, 128}:
             # This is an autonomous furnace - ignore reported fan_mode_num and use simplified logic
             if fan_mode_num == 0:
-                _LOGGER.debug(
-                    "Zone %d autonomous furnace fan_mode: fan_mode_num=%s -> 'off'",
-                    self._zone,
-                    fan_mode_num,
-                )
                 return "off"
             else:
                 # Any non-zero value represents autonomous operation
-                _LOGGER.debug(
-                    "Zone %d autonomous furnace fan_mode: fan_mode_num=%s -> 'low' (autonomous on)",
-                    self._zone,
-                    fan_mode_num,
-                )
-                return "low"  # Represents autonomous operation
+                return "auto"  # Represents autonomous operation
 
         # Normal mapping for other modes
         for ha_mode, numeric_values in FAN_MODE_REVERSE_MAP.items():
@@ -395,9 +393,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         # Map device fan speeds to HA fan mode names
         fan_mode_names = []
 
-        # Special case: Check if this is autonomous furnace mode (FA=32: speeds [0,1] only)
-        #  is_autonomous_furnace = set(available_speeds) == {0, 128}
-
         for speed in available_speeds:
             if speed == 0:
                 fan_mode_names.append("off")
@@ -419,6 +414,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 unique_modes.append(mode)
 
         # Allow empty fan_mode values gracefully (HA UI can send blank during mode transitions)
+        # This has a side effect of adding a blank mode to the list.
         if "" not in unique_modes:
             unique_modes.append("")
 

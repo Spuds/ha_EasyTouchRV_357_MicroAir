@@ -1598,15 +1598,14 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             speeds.append(speed)
 
         # Special case: Autonomous furnace mode (FA=32, max_speed=0 but allow_off=True)
-        # This represents a furnace where fan is autonomous but UI shows on/off
-        # Add speed 1 to represent "autonomous on" state
+        # This represents a furnace where fan is autonomous but UI needs to shows on/off
         if (
             capabilities["max_speed"] == 0
             and capabilities["allow_off"]
             and not capabilities["allow_manual_auto"]
             and not capabilities["allow_full_auto"]
         ):
-            speeds.append(128)  # Provide autonomous "on" state
+            speeds.append(128)  # Provide autonomous "auto" state
 
         # Add auto modes if allowed
         if capabilities["allow_manual_auto"]:
