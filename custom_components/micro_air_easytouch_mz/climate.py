@@ -396,22 +396,17 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         fan_mode_names = []
 
         # Special case: Check if this is autonomous furnace mode (FA=32: speeds [0,1] only)
-        is_autonomous_furnace = set(available_speeds) == {0, 1}
+        #  is_autonomous_furnace = set(available_speeds) == {0, 128}
 
         for speed in available_speeds:
             if speed == 0:
                 fan_mode_names.append("off")
             elif speed == 1:
-                if is_autonomous_furnace:
-                    # For autonomous furnace, speed 1 represents "autonomous operation"
-                    # We'll use "low" but it represents full autonomous operation, not low speed
-                    fan_mode_names.append("low")
-                else:
-                    fan_mode_names.append("low")
+                fan_mode_names.append("low")
             elif speed == 2:
                 fan_mode_names.append("high")
             elif speed == 3:
-                fan_mode_names.append("medium")  # For 3-speed systems
+                fan_mode_names.append("medium")  # For 3-speed systems not sure 2<=>3
             elif speed == 64:
                 fan_mode_names.append("auto")  # Manual auto
             elif speed == 128:
@@ -422,6 +417,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         for mode in fan_mode_names:
             if mode not in unique_modes:
                 unique_modes.append(mode)
+
+        # Allow empty fan_mode values gracefully (HA UI can send blank during mode transitions)
+        if "" not in unique_modes:
+            unique_modes.append("")
 
         return unique_modes if unique_modes else ["auto"]
 
@@ -715,6 +714,13 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             self.fan_mode,
             fan_mode,
         )
+
+        # Ignore empty fan_mode requests that can occur during UI transitions
+        if not fan_mode:
+            _LOGGER.debug(
+                "Zone %d ignoring empty fan_mode request during transition", self._zone
+            )
+            return
 
         # Validate fan mode is available for current HVAC mode
         if fan_mode not in self.fan_modes:
