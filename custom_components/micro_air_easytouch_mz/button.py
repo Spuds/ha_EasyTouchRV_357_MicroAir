@@ -93,7 +93,6 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from updates when entity is removed."""
         # Note: The parser doesn't currently provide an unsubscribe method
-        # but this is here for future compatibility
         pass
 
     def _handle_update(self, device_state=None) -> None:
@@ -133,20 +132,10 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
         if len(prm_data) > 1:
             flags_register = prm_data[1]
             return (flags_register & 8) > 0  # Bit 3 = System Power
-        return False  # Default to off if no data available
-
-    def _get_zone_count(self) -> int:
-        """Get the number of available zones from device data."""
-        device_data = self._data.async_get_device_data()
-        available_zones = device_data.get("available_zones", [0])
-        return len(available_zones)
+        return False
 
     async def async_press(self) -> None:
         """Toggle system-wide power (all zones on/off).
-
-        Sends command to a non-existent zone (zone_count) to toggle system power
-        without affecting individual zone states. This allows zones to retain
-        their last state when the system comes back online.
 
         Checks current state from PRM[1] bit 3 (System Power flag) and toggles:
         - If currently on (bit 3 set), send mode=0, power=0, zone=zone_count (turn off)
@@ -154,15 +143,7 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
         """
         is_on = self._is_unit_on()
         new_power_state = 0 if is_on else 1
-        zone_count = self._get_zone_count()
         action = "OFF" if is_on else "ON"
-
-        _LOGGER.debug(
-            "Power toggle button pressed - current state: %s, setting to: %s, using zone: %d",
-            "ON" if is_on else "OFF",
-            action,
-            zone_count,
-        )
 
         ble_device = async_ble_device_from_address(self.hass, self._mac_address)
         if not ble_device:
@@ -177,9 +158,8 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
         success = await self._data.send_command(self.hass, ble_device, cmd)
         if success:
             _LOGGER.info(
-                "Sent system-wide %s (mode=0, zone=%d, power=%d) to device %s",
+                "Sent system-wide %s (mode=0, power=%d) to device %s",
                 action,
-                zone_count,
                 new_power_state,
                 self._mac_address,
             )

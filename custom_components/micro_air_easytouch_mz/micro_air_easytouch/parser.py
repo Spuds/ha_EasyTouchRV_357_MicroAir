@@ -730,7 +730,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 return [0]
 
         _LOGGER.debug(
-            "Probing device %s for available zones with enhanced detection",
+            "Probing device %s for available zones",
             ble_device.address,
         )
 
@@ -738,7 +738,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         for attempt in range(3):
             client = None
             try:
-                _LOGGER.debug("Zone detection attempt %d/3", attempt + 1)
                 client = await establish_connection(
                     BleakClientWithServiceCache,
                     ble_device,
@@ -877,7 +876,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
             # Wait between attempts to let device settle
             if attempt < 2:  # Don't wait after the last attempt
-                _LOGGER.debug("Waiting before next zone probe attempt...")
                 await asyncio.sleep(1.0)
 
         # All attempts failed, fallback to single zone
@@ -1252,32 +1250,14 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             try:
                 ble_device = async_ble_device_from_address(hass, address)
                 if ble_device:
-                    _LOGGER.debug(
-                        "Successfully resolved BLE device %s on attempt %d",
-                        address,
-                        attempt + 1,
-                    )
                     return ble_device
 
                 # Device not found, might be in low-power mode
                 if attempt < retries - 1:
                     wait_time = 2.0**attempt  # Exponential backoff: 1s, 2s, 4s
-                    _LOGGER.debug(
-                        "BLE device %s not found, retrying in %.1fs (attempt %d/%d)",
-                        address,
-                        wait_time,
-                        attempt + 1,
-                        retries,
-                    )
                     await asyncio.sleep(wait_time)
 
-            except Exception as e:
-                _LOGGER.debug(
-                    "Error resolving BLE device %s on attempt %d: %s",
-                    address,
-                    attempt + 1,
-                    str(e),
-                )
+            except Exception:
                 if attempt < retries - 1:
                     await asyncio.sleep(1.0)
 
@@ -1293,7 +1273,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         try:
             if self._client and self._client.is_connected:
                 await self._client.disconnect()
-                _LOGGER.debug("Disconnected from device safely")
         except Exception as e:
             _LOGGER.debug("Error during safe disconnect: %s", str(e))
         finally:
@@ -1438,7 +1417,6 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 try:
                     # Skip this poll iteration if commands are being processed
                     if not self._command_queue.empty():
-                        _LOGGER.debug("Skipping poll - commands in queue")
                         await asyncio.sleep(
                             self._poll_interval / 4
                         )  # Check again sooner
@@ -1490,18 +1468,12 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                         )
                                         if json_payload:
                                             # preview, full_b64 = _format_payload_for_log(json_payload)
-                                            # _LOGGER.debug("Poll raw payload preview: %s (len=%d)", preview, len(json_payload))
-                                            # _LOGGER.debug("Poll raw payload (base64): %s", full_b64)
                                             # Pass bytes directly to decrypt (it accepts bytes or str)
                                             self.decrypt(json_payload)
-                                            # _LOGGER.debug("Poll applied authoritative state for device %s", getattr(current_ble_device, 'address', getattr(self, '_address', None)))
                                             self._last_poll_success = True
                                             self._last_poll_time = time.time()
                                             self._last_activity_time = time.time()
                                         else:
-                                            _LOGGER.debug(
-                                                "Poll read returned no payload"
-                                            )
                                             self._last_poll_success = False
                                     else:
                                         _LOGGER.debug("Poll send_command failed")
@@ -1628,15 +1600,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         # Special case: Autonomous furnace mode (FA=32, max_speed=0 but allow_off=True)
         # This represents a furnace where fan is autonomous but UI shows on/off
         # Add speed 1 to represent "autonomous on" state
-        if (capabilities["max_speed"] == 0 and 
-            capabilities["allow_off"] and 
-            not capabilities["allow_manual_auto"] and 
-            not capabilities["allow_full_auto"]):
-            speeds.append(1)  # Autonomous "on" state
-            _LOGGER.debug(
-                "Zone %d mode %d: Detected autonomous furnace fan (FA=32), adding speed 1 for 'on' state",
-                zone, mode
-            )
+        if (
+            capabilities["max_speed"] == 0
+            and capabilities["allow_off"]
+            and not capabilities["allow_manual_auto"]
+            and not capabilities["allow_full_auto"]
+        ):
+            speeds.append(128)  # Provide autonomous "on" state
 
         # Add auto modes if allowed
         if capabilities["allow_manual_auto"]:
