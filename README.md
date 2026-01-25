@@ -87,12 +87,13 @@ Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air
 ### Home Assistant Integration Limitations
 - Temperature display resolution limited to whole degrees
 - Some fan modes do not have Home Assistant equivalents
+- The climate framework validates the fan_mode against fan_modes *before* the service handler runs. So dynamic per-mode fan speeds cause a HA error.  The work-around is the reason you see an empty selection in the fan speed pulldown.
 
 ## Common Issues
 - **Connection Timeout**: Ensure the thermostat is powered and connected to HA with a GATT connection.
 - **Authentication Failed**: Verify micro-air email/password credentials
 - **Missing Modes**: Check your device configuration - some modes may not be supported
-- **Slow Response**: Normal behavior - device protocol requires 1-2 second delays to validate the sent command was successful.  The command is sent right away, but the system must wait to see if it was "accepted"
+- **Slow Response**: Device protocol requires 1-2 second delays to validate the command was successful.  The command is sent right away, but the system must wait to see if it was "accepted"
 
 ### Device Reset
 If the device becomes unresponsive, try the reboot service or power cycle the device.
