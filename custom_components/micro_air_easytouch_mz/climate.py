@@ -191,14 +191,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def entity_picture(self) -> str | None:
         """Return the entity picture."""
+        # Called by Home Assistant's climate entity framework
         if self.fan_mode:
             return f"mdi:{FAN_MODE_ICONS.get(self.fan_mode, 'fan')}"
         return None
-
-    @property
-    def current_fan_icon(self) -> str:
-        """Return the icon to use for the current fan mode."""
-        return FAN_MODE_ICONS.get(self.fan_mode, "mdi:fan")
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -210,17 +206,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         """Run when entity is being removed from hass."""
         if hasattr(self, "_unsubscribe_updates"):
             self._unsubscribe_updates()
-
-    async def _async_fetch_initial_state(self) -> None:
-        """DEPRECATED: Fetch the initial state from the device.
-
-        This method is no longer used. State updates come from the shared
-        polling loop to prevent connection conflicts.
-        """
-        _LOGGER.debug(
-            "_async_fetch_initial_state called for zone %s - using shared polling instead",
-            self._zone,
-        )
 
     @property
     def current_temperature(self) -> float | None:
@@ -261,6 +246,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def hvac_action(self) -> HVACAction | None:
         """Return the current HVAC action."""
+        # Called by Home Assistant's climate entity framework
         current_mode = self._state.get("current_mode")
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
@@ -288,7 +274,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def fan_mode(self) -> str | None:
         """Return the current fan mode as a standard Home Assistant name."""
-        # Get the appropriate fan mode number based on current HVAC mode
+        # Get the appropriate fan mode number based on current HVAC mode - Called by Home Assistant's climate entity framework
         if self.hvac_mode == HVACMode.FAN_ONLY:
             fan_mode_num = self._state.get("fan_mode_num", 0)
         elif self.hvac_mode == HVACMode.COOL:
@@ -306,7 +292,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             self._zone, current_mode_num
         )
 
-        # Special handling for autonomous furnace (speeds [0, 1] only)
+        # Special handling for autonomous furnace (speeds [0, 128] only)
         if set(available_speeds) == {0, 128}:
             # This is an autonomous furnace - ignore reported fan_mode_num and use simplified logic
             if fan_mode_num == 0:
@@ -338,6 +324,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def hvac_modes(self) -> list[HVACMode]:
         """Return available HVAC modes based on zone configuration."""
+        # Called by Home Assistant's climate entity framework
         available_modes = self._data.get_available_modes(self._zone)
 
         if not available_modes:
@@ -371,6 +358,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def fan_modes(self) -> list[str]:
         """Return available fan modes based on zone configuration and current HVAC mode."""
+        # Called by Home Assistant's climate entity framework
         # Get current device mode number
         current_mode_num = self._state.get("mode_num")
         if current_mode_num is None:
@@ -927,11 +915,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             }
 
         return attrs
-
-    async def async_update(self) -> None:
-        """Update the entity state manually if needed."""
-        _LOGGER.debug("Updating state for zone %s", self._zone)
-        await self._async_fetch_initial_state()
 
     def _handle_update(self, full_state) -> None:
         # Update self._state from parser (guard for missing data)
