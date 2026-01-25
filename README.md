@@ -14,7 +14,7 @@ This integration provides Home Assistant control for Micro-Air EasyTouch RV ther
 
 As I only have a model 357 (Dometic CCC1) that is all I've been able to test.  Please see the [WIKI](https://github.com/Spuds/ha_EasyTouchRV_MicroAir_MZ/wiki) for what protocol information has been reverse engineered.
 
-Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air-easytouch) by [k3vmcd](https://github.com/k3vmcd), this version has been extensively hacked in an effort to provide BLE stability fixes, advanced mode support, and add new features.
+Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air-easytouch) by [k3vmcd](https://github.com/k3vmcd), this version has been extensively hacked in an effort to provide BLE stability, Optimistic UI, Feature discovery, Heat presets and Improved zone discovery.
 
 ## Key Features 
 
@@ -28,8 +28,7 @@ Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air
 
 ### ⚡ **Smart Capability Discovery**
 - Automatic detection of available HVAC modes per zone
-- Proper fan control for all operating modes
-- Zone-specific capability filtering
+- Fan control for all operating modes
 
 ### 🚀 **Optimistic UI Updates**
 - Immediate UI feedback on command execution
@@ -37,7 +36,7 @@ Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air
 
 ### 🎛️ **HVAC Control**
 - Support for all device modes (Off, Fan, Cool, Heat variants, Auto variants, Dry)
-- Multiple heat mode support with heat presets
+- Multiple heat mode support (heat pump / furnace) with heat presets
 
 ## Installation
 
@@ -78,26 +77,25 @@ Originally forked from [micro-air-easytouch](https://github.com/k3vmcd/micro-air
 - **Location Service**: Configure device GPS coordinates for weather display
 - **All Off**: Centralized "All Off" button for system
 
-## Known Limitations
+## Known Problems
 
 ### Device Limitations
-- Commands take 1-2 seconds to validate (device protocol limitation)
+- Commands can take 1-2 seconds to validate (device protocol limitation)
 - Device responds to only one Bluetooth connection at a time
-- Mobile app usage will disconnect Home Assistant temporarily
+- Mobile app usage will temporarily disconnect Home Assistant
 
 ### Home Assistant Integration Limitations
 - Temperature display resolution limited to whole degrees
-- Some advanced fan modes may not have Home Assistant equivalents
-- Zone detection requires device to be powered on during setup
+- Some fan modes do not have Home Assistant equivalents
 
 ## Common Issues
-- **Connection Timeout**: Ensure device is powered and in range
-- **Authentication Failed**: Verify email/password credentials
-- **Missing Modes**: Check your device configuration - some modes may be disabled
+- **Connection Timeout**: Ensure the thermostat is powered and connected to HA with a GATT connection.
+- **Authentication Failed**: Verify micro-air email/password credentials
+- **Missing Modes**: Check your device configuration - some modes may not be supported
 - **Slow Response**: Normal behavior - device protocol requires 1-2 second delays to validate the sent command was successful.  The command is sent right away, but the system must wait to see if it was "accepted"
 
 ### Device Reset
-If the device becomes unresponsive, use the reboot service or power cycle the device.
+If the device becomes unresponsive, try the reboot service or power cycle the device.
 
 ## Contributing
 Issues, feature requests, and pull requests are welcome.
