@@ -20,6 +20,5 @@
     "iot_class": "local_push",
     "issue_tracker": "https://github.com/Spuds/ha_EasyTouchRV_MicroAir_MZ/issues",
     "requirements": [],
-    "version": "1.0.1",
-    "icon": "mdi:hvac"
+    "version": "1.0.1"
 }
