@@ -118,12 +118,12 @@ class MicroAirEasyTouchPowerToggleButton(ButtonEntity):
     @property
     def name(self) -> str:
         """Return the current name attribute."""
-        return self._attr_name
+        return self._attr_name or "System Power Toggle"
 
     @property
     def icon(self) -> str:
         """Return the current icon attribute."""
-        return self._attr_icon
+        return self._attr_icon or "mdi:power"
 
     def _is_unit_on(self) -> bool:
         """Check if unit is currently on based on PRM[1] bit 3 (System Power flag)."""
