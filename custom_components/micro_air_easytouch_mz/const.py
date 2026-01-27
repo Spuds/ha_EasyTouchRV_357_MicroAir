@@ -8,12 +8,13 @@ DOMAIN = "micro_air_easytouch_mz"
 FAN_MODE_ICONS = {
     "off": "mdi:fan-off",
     "low": "mdi:fan-speed-1",
+    "medium": "mdi:fan-speed-2",
     "high": "mdi:fan-speed-3",
     "manualL": "mdi:fan-speed-1",
     "manualH": "mdi:fan-speed-3",
     "cycledL": "mdi:fan-clock",
     "cycledH": "mdi:fan-clock",
-    "full auto": "mdi:fan-auto",
+    "auto": "mdi:fan-auto",
 }
 
 # Map HVAC modes to icons
