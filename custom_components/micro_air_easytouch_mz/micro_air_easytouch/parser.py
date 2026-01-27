@@ -6,6 +6,7 @@ import asyncio
 import time
 import json
 import base64
+from typing import Callable
 
 # Bluetooth-related imports for device communication
 from bleak import BLEDevice
@@ -42,7 +43,7 @@ def retry_authentication(retries=3, delay=1):
                     if attempt < retries - 1:
                         await asyncio.sleep(delay)
                         continue
-                except Exception as e:
+                except (BleakError, asyncio.TimeoutError, OSError) as e:
                     last_exception = e
                     if attempt < retries - 1:
                         await asyncio.sleep(delay)
@@ -91,7 +92,7 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
                 prm = parsed.get("PRM")
                 ci = parsed.get("CI")
                 ha = parsed.get("hA") if "hA" in parsed else parsed.get("HA")
-                # Make a compact JSON preview of Z_sts and selected metadata (PRM/CI/hA) when present
+                # Make a JSON preview of Z_sts and selected metadata (PRM/CI/hA)
                 preview_obj = {"Z_sts": zsts}
                 if "PRM" in parsed:
                     preview_obj["PRM"] = prm
@@ -104,18 +105,18 @@ def _format_payload_for_log(payload: bytes) -> tuple[str, str]:
                 )
                 preview = z_preview[:250]
                 return preview, full_b64
-        except Exception:
+        except (json.JSONDecodeError, KeyError, TypeError):
             # JSON parse failed or Z_sts absent; fall back
             pass
 
         # Fallback: use repr of decoded text so non-printable characters are visible
         try:
             text = data_bytes.decode("utf-8", errors="replace")
-        except Exception:
+        except UnicodeDecodeError:
             text = repr(data_bytes)
         preview = repr(text)[:200]
         return preview, full_b64
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return ("", "")
 
 
@@ -155,16 +156,16 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
 
         # Subscribers to device update events. Each subscriber is a callable
         # that takes no arguments and is invoked when device state changes.
-        self._update_listeners: list[callable] = []
+        self._update_listeners: list[Callable] = []
 
         # Store BLE device object for persistence across operations
         self._stored_ble_device: BLEDevice | None = None
         self._stored_address: str | None = None
 
-        # Synchronization primitives for multi-zone safety
+        # Synchronization for multi-zone safety, Prevents concurrent connection modifications
         self._client_lock = (
             asyncio.Lock()
-        )  # Prevents concurrent connection modifications
+        )
         self._command_queue = asyncio.Queue()  # FIFO command execution
         self._queue_worker_task = None  # Manages queue processing
         self._connected = False  # Tracks persistent connection state
@@ -175,7 +176,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         )
         self._health_check_interval = 60.0  # Check connection health every 60 seconds
 
-        # Polling is enabled by default because device does not advertise full state
+        # Polling is enabled by default because device does not advertise
         self._polling_enabled: bool = True
         self._poll_interval: float = 30.0  # seconds
         self._poll_task: asyncio.Task | None = None
@@ -246,7 +247,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         # Notify any subscribers that new data is available (advertisement-driven)
         self._notify_update()
 
-    def async_subscribe_updates(self, callback: callable) -> callable:
+    def async_subscribe_updates(self, callback: Callable) -> Callable:
         """Subscribe to device update notifications.
 
         Returns an unsubscribe callable that removes the callback when invoked.
@@ -293,7 +294,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     self._stored_ble_device = device
                     self._ble_device = device
                     return device
-            except Exception:
+            except (ValueError, AttributeError):
                 pass
 
             # If Home Assistant can't find the device, create a minimal one for connection attempts
@@ -312,7 +313,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     self._stored_address,
                 )
                 return minimal_device
-            except Exception as e:
+            except (TypeError, ValueError, AttributeError) as e:
                 _LOGGER.debug("Failed to create minimal BLE device: %s", str(e))
 
         return None
@@ -332,11 +333,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 # Callback likely expects no arguments; fall back to calling without arguments.
                 try:
                     callback()
-                except Exception as e:
+                except (ValueError, AttributeError) as e:
                     _LOGGER.debug(
                         "Error in update listener (no-arg fallback): %s", str(e)
                     )
-            except Exception as e:
+            except (ValueError, AttributeError) as e:
                 _LOGGER.debug("Error in update listener: %s", str(e))
 
     def async_get_device_data(self) -> dict:
@@ -358,12 +359,15 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         param = status.get("PRM", [])
         modes = {
             0: "off",
-            5: "heat_on",
-            4: "heat",
-            3: "cool_on",
-            2: "cool",
             1: "fan",
+            2: "cool",
+            3: "heat_on",
+            4: "heat",
+            5: "heat_on",
+            6: "dry",
+            7: "heat_on",
             8: "auto",
+            9: "auto",
             10: "auto",
             11: "auto",
         }
@@ -402,23 +406,17 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 zone_status["autoCool_sp"] = info[1]  # Auto mode cool setpoint
                 zone_status["cool_sp"] = info[2]  # Cool mode setpoint
                 zone_status["heat_sp"] = info[3]  # Heat mode setpoint
-                zone_status["dry_sp"] = info[4]  # Dry/Dehumidify setpoint
+                zone_status["dry_sp"] = info[4]  # Dry/Dehumidify T setpoint
+                zone_status["rh_sp"] = info[5]  # Dry/Dehumidify RH setpoint
                 zone_status["fan_mode_num"] = info[6]  # Fan setting in fan-only mode
                 zone_status["cool_fan_mode_num"] = info[7]  # Fan setting in cool mode
-                zone_status["heat_fan_mode_num"] = info[
-                    8
-                ]  # Fan setting in heat modes (5=heat pump, 7=heat strip)
+                zone_status["heat_fan_mode_num"] = info[8]  # Fan setting in ele_heat mode
                 zone_status["auto_fan_mode_num"] = info[9]  # Fan setting in auto mode
                 zone_status["mode_num"] = info[10]  # User selected mode
-                zone_status["furnace_fan_mode_num"] = info[
-                    11
-                ]  # Fan setting in furnace heating modes (3=propane, 4=aquahot)
-                zone_status["facePlateTemperature"] = info[
-                    12
-                ]  # Current actual temperature
-                zone_status["active_state_num"] = info[
-                    15
-                ]  # Active state (0=idle, 2=cooling, 4=heating, etc.)
+                zone_status["furnace_fan_mode_num"] = info[11]  # Fan setting in gas_heat modes
+                zone_status["facePlateTemperature"] = info[12]  # Current temperature
+                zone_status["outdoorTemperature"] = info[13]  # Current outdoor temperature
+                zone_status["active_state_num"] = info[15]  # Active state
 
                 # Check unit power state from PRM[1] bit 3 (System Power flag)
                 if len(param) > 1:
@@ -431,16 +429,20 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 if zone_status["mode_num"] in modes:
                     zone_status["mode"] = modes[zone_status["mode_num"]]
 
-                # Map active state to current operating mode
+                # Map active state to current operating mode using bitmask
                 # Active state indicates what the unit is actually doing
-                active_state_map = {0: "off", 2: "cool", 4: "heat"}
-                if zone_status["active_state_num"] in active_state_map:
-                    zone_status["current_mode"] = active_state_map[
-                        zone_status["active_state_num"]
-                    ]
+                # Bit 0 (1): Cycle Active - HVAC cycle currently running
+                # Bit 1 (2): Cooling - Zone is actively cooling
+                # Bit 2 (4): Heating - Zone is actively heating
+                # Bit 3 (8) & Bit 4 (16): Unknown
+                # Bit 5 (32): Auto Heat? - Auto-heat mode active
+                active_state_num = zone_status["active_state_num"]
+                if active_state_num & 4:  # Bit 2: Heating
+                    zone_status["current_mode"] = "heat"
+                elif active_state_num & 2:  # Bit 1: Cooling
+                    zone_status["current_mode"] = "cool"
                 else:
-                    # Fallback: use selected mode if active state is unknown
-                    zone_status["current_mode"] = zone_status.get("mode", "off")
+                    zone_status["current_mode"] = "off"
 
                 # Detect heat source if mode_num indicates heat variants
                 if zone_status.get("mode_num") in (4, 5):
@@ -456,24 +458,23 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     fan_num = info[6]
                     zone_status["fan_mode_num"] = fan_num
                     zone_status["fan_mode"] = FAN_MODES_FAN_ONLY.get(fan_num, "off")
-                elif current_mode == "cool":
+                elif current_mode in ("cool", "dry"):
                     fan_num = info[7]
                     zone_status["cool_fan_mode_num"] = fan_num
                     zone_status["cool_fan_mode"] = FAN_MODES_FULL.get(
                         fan_num, "full auto"
                     )
+                # For heat modes, use different fan index based on specific mode    
                 elif current_mode in ("heat_on", "heat"):
-                    # For heat modes, use different fan index based on specific mode
-                    if zone_status.get("mode_num") in (3, 4):  # Furnace heat modes
+                    # Furnace heat modes
+                    if zone_status.get("mode_num") in (3, 4):
                         fan_num = info[11]
                         zone_status["furnace_fan_mode_num"] = fan_num
                         zone_status["heat_fan_mode"] = FAN_MODES_FULL.get(
                             fan_num, "full auto"
                         )
-                    elif zone_status.get("mode_num") in (
-                        5,
-                        7,
-                    ):  # Heat pump (5) or heat strip (7)
+                    # Heat pump (5) or heat strip (7)    
+                    elif zone_status.get("mode_num") in (5, 7):
                         fan_num = info[8]
                         zone_status["heat_fan_mode_num"] = fan_num
                         zone_status["heat_fan_mode"] = FAN_MODES_FULL.get(
@@ -520,7 +521,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     len(preserved_zone_configs),
                 )
             self._notify_update()
-        except Exception as e:
+        except (KeyError, ValueError, AttributeError) as e:
             _LOGGER.debug("Failed to notify subscribers of decrypted state: %s", str(e))
 
         return hr_status
@@ -541,7 +542,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 _LOGGER.error("No services available after connecting")
                 return False
             return self._client
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError) as e:
             _LOGGER.error("Connection error: %s", str(e))
             raise
 
@@ -569,7 +570,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             )
             _LOGGER.debug("Authentication sent successfully")
             return True
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, AttributeError) as e:
             _LOGGER.error("Authentication failed: %s", str(e))
             if self._client and self._client.is_connected:
                 await self._client.disconnect()
@@ -634,7 +635,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             else:
                 self._increase_operation_delay(hass, ble_device.address, "auth")
             return auth_result
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, AttributeError) as e:
             _LOGGER.error("Reconnection failed: %s", str(e))
             self._increase_operation_delay(hass, ble_device.address, "connect")
             return False
@@ -702,15 +703,15 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 _LOGGER.error("Failed to send reboot command: %s", str(e))
                 self._increase_operation_delay(hass, ble_device.address, "write")
                 return False
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, AttributeError, json.JSONDecodeError) as e:
             _LOGGER.error("Error during reboot: %s", str(e))
             return False
         finally:
             try:
                 if self._client and self._client.is_connected:
                     await self._client.disconnect()
-            except Exception as e:
-                _LOGGER.debug("Error disconnecting after reboot: %s", str(e))
+            except (BleakError, OSError):
+                _LOGGER.debug("Error disconnecting after reboot")
             self._client = None
             self._ble_device = None
 
@@ -764,7 +765,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                         _LOGGER.debug(
                             "Zone probe authentication sent (attempt %d)", attempt + 1
                         )
-                    except Exception as e:
+                    except (BleakError, asyncio.TimeoutError, OSError, AttributeError) as e:
                         _LOGGER.debug(
                             "Zone probe authentication failed (attempt %d): %s",
                             attempt + 1,
@@ -851,7 +852,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                 attempt + 1,
                             )
 
-                    except Exception as e:
+                    except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
                         _LOGGER.debug(
                             "Zone probe command %d failed (attempt %d): %s",
                             cmd_index + 1,
@@ -860,7 +861,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                         )
                         continue
 
-            except Exception as e:
+            except (BleakError, asyncio.TimeoutError, OSError) as e:
                 _LOGGER.debug(
                     "Zone probe attempt %d failed for %s: %s",
                     attempt + 1,
@@ -871,7 +872,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 try:
                     if client and client.is_connected:
                         await client.disconnect()
-                except Exception:
+                except (BleakError, OSError):
                     pass
 
             # Wait between attempts to let device settle
@@ -907,8 +908,8 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             else:
                 # It's a BLEDevice, create a temporary connection
                 from bleak_retry_connector import (
-                    establish_connection,
                     BleakClientWithServiceCache,
+                    establish_connection,
                 )
 
                 client = await establish_connection(
@@ -929,7 +930,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                             UUIDS["passwordCmd"], password_bytes, response=True
                         )
                         await asyncio.sleep(0.3)
-                    except Exception as e:
+                    except (BleakError, asyncio.TimeoutError, OSError, AttributeError) as e:
                         _LOGGER.debug("Auth failed during config fetch: %s", str(e))
                         return
                 is_temp_client = True
@@ -967,18 +968,14 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                     self._device_state["zone_configs"] = {}
 
                                 self._device_state["zone_configs"][zone] = {
-                                    "MAV": cfg_data.get(
-                                        "MAV", 0
-                                    ),  # Mode available bitmask
-                                    "FA": cfg_data.get(
-                                        "FA", [0] * 16
-                                    ),  # Fan array (16 elements)
-                                    "SPL": cfg_data.get(
-                                        "SPL", [60, 85, 60, 85]
-                                    ),  # Setpoint limits
-                                    "MA": cfg_data.get(
-                                        "MA", [0] * 16
-                                    ),  # Mode array (currently unused)
+                                    # Mode available bitmask
+                                    "MAV": cfg_data.get("MAV", 0),
+                                    # Fan array (16 elements)
+                                    "FA": cfg_data.get("FA", [0] * 16),
+                                    # Setpoint limits array (4 elements)
+                                    "SPL": cfg_data.get("SPL", [60, 85, 55, 85]),
+                                    # Mode array (currently unused)
+                                    "MA": cfg_data.get("MA", [0] * 16),
                                 }
 
                                 _LOGGER.debug(
@@ -1003,7 +1000,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     else:
                         _LOGGER.debug("No config response received for zone %d", zone)
 
-                except Exception as e:
+                except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
                     _LOGGER.debug("Error fetching config for zone %d: %s", zone, str(e))
                     continue
 
@@ -1012,7 +1009,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             if is_temp_client and client and client.is_connected:
                 try:
                     await client.disconnect()
-                except Exception:
+                except (BleakError, OSError):
                     pass
 
         _LOGGER.debug(
@@ -1057,13 +1054,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             await self._fetch_zone_configurations(client, zones)
             _LOGGER.info("Runtime zone configuration re-fetch completed successfully")
 
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
             _LOGGER.warning("Error re-fetching zone configurations: %s", str(e))
         finally:
             try:
                 if client and client.is_connected:
                     await client.disconnect()
-            except Exception:
+            except (BleakError, OSError):
                 pass
 
     async def _process_command_queue(self, hass, ble_device: BLEDevice) -> None:
@@ -1117,14 +1114,14 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     ):
                         await self._disconnect_safely()
                     continue
-                except Exception as e:
+                except (BleakError, OSError, json.JSONDecodeError) as e:
                     _LOGGER.error("Error in command queue worker: %s", str(e))
                     # Try to set error on pending command if available
                     try:
                         if not command_item["result_future"].done():
                             command_item["result_future"].set_result(False)
                         self._command_queue.task_done()
-                    except Exception:
+                    except (KeyError, AttributeError):
                         pass
                     await asyncio.sleep(1.0)  # Brief recovery delay
         except asyncio.CancelledError:
@@ -1136,7 +1133,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     if not item["result_future"].done():
                         item["result_future"].set_result(False)
                     self._command_queue.task_done()
-                except Exception:
+                except (KeyError, AttributeError):
                     break
             raise
         finally:
@@ -1222,7 +1219,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                 "Failed to send status verification command for zone %d",
                                 zone,
                             )
-                    except Exception as e:
+                    except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
                         _LOGGER.warning(
                             "Error reading command verification (will rely on polling): %s",
                             str(e),
@@ -1232,7 +1229,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 self._last_activity_time = time.time()
                 return True
 
-            except Exception as e:
+            except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
                 _LOGGER.error("Failed to execute command safely: %s", str(e))
                 # Force disconnect on errors to ensure clean state
                 await self._disconnect_safely()
@@ -1286,7 +1283,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
             _LOGGER.debug("Persistent connection established successfully")
             return True
 
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, AttributeError) as e:
             _LOGGER.error("Failed to ensure connection: %s", str(e))
             await self._disconnect_safely()
             return False
@@ -1308,7 +1305,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                     wait_time = 2.0**attempt  # Exponential backoff: 1s, 2s, 4s
                     await asyncio.sleep(wait_time)
 
-            except Exception:
+            except (ValueError, AttributeError):
                 if attempt < retries - 1:
                     await asyncio.sleep(1.0)
 
@@ -1324,7 +1321,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         try:
             if self._client and self._client.is_connected:
                 await self._client.disconnect()
-        except Exception as e:
+        except (BleakError, OSError) as e:
             _LOGGER.debug("Error during safe disconnect: %s", str(e))
         finally:
             self._client = None
@@ -1364,7 +1361,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                     "Connection health check failed - no services, reconnecting"
                                 )
                                 await self._disconnect_safely()
-                        except Exception as e:
+                        except (BleakError, OSError) as e:
                             _LOGGER.debug(
                                 "Connection health check failed: %s, reconnecting",
                                 str(e),
@@ -1374,7 +1371,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 except asyncio.CancelledError:
                     _LOGGER.debug("Connection health monitor cancelled")
                     break
-                except Exception as e:
+                except (BleakError, asyncio.TimeoutError, OSError) as e:
                     _LOGGER.debug("Error in connection health monitor: %s", str(e))
                     await asyncio.sleep(30)  # Wait before retrying
 
@@ -1413,7 +1410,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         try:
             self._stored_ble_device = None
             self._ble_device = None
-        except Exception:
+        except (AttributeError, ValueError):
             pass
 
         _LOGGER.debug("Device shutdown complete")
@@ -1539,11 +1536,11 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                                 else:
                                     _LOGGER.debug("Poll failed to establish connection")
                                     self._last_poll_success = False
-                            except Exception as e:
+                            except (BleakError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as e:
                                 _LOGGER.debug("Error during poll execution: %s", str(e))
                                 self._last_poll_success = False
 
-                except Exception as e:
+                except (BleakError, asyncio.TimeoutError, OSError, AttributeError, KeyError, ValueError) as e:
                     _LOGGER.debug("Error during poll iteration: %s", str(e))
                     self._last_poll_success = False
                 finally:
@@ -1588,7 +1585,7 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
         except asyncio.TimeoutError:
             _LOGGER.error("Command timeout after 30s: %s", command)
             return False
-        except Exception as e:
+        except (BleakError, asyncio.TimeoutError, OSError, AttributeError, KeyError) as e:
             _LOGGER.error("Command execution failed: %s", str(e))
             return False
 
