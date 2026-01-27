@@ -13,6 +13,13 @@ from homeassistant.components.climate import (
     HVACAction,
     PRESET_NONE,
 )
+from homeassistant.components.climate.const import (
+    FAN_OFF,
+    FAN_LOW,
+    FAN_MEDIUM,
+    FAN_HIGH,
+    FAN_AUTO,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.config_entries import ConfigEntry
@@ -38,9 +45,28 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up MicroAirEasyTouch climate platform."""
+    """Set up MicroAirEasyTouch climate platform from a config entry.
+
+    Detects available zones for the device and creates a climate entity
+    for each zone. Zone detection is attempted in the following order:
+    1. Pre-detected zones stored in config entry during setup
+    2. Dynamic probing via BLE device discovery
+    3. Fallback to single zone 0 if detection fails
+
+    Args:
+        hass: The Home Assistant instance.
+        config_entry: The config entry for this MicroAirEasyTouch device,
+            containing the entry_id and unique_id (MAC address).
+        async_add_entities: Callback to add climate entities to Home Assistant.
+
+    Returns:
+        None. Entities are added via async_add_entities callback.
+    """
     data = hass.data[DOMAIN][config_entry.entry_id]["data"]
     mac_address = config_entry.unique_id
+    if not mac_address:
+        _LOGGER.error("MAC address not found in config entry")
+        return
 
     # Try to get zones from config entry first (detected during setup)
     available_zones = config_entry.data.get("detected_zones", None)
@@ -81,8 +107,27 @@ async def async_setup_entry(
 
 
 class MicroAirEasyTouchClimate(ClimateEntity):
-    """Representation of MicroAirEasyTouch Climate."""
+    """Representation of a MicroAirEasyTouch climate zone entity.
 
+    This class models a single zone of a MicroAirEasyTouch thermostat system,
+    providing control and monitoring of HVAC modes, fan speeds, target temperatures,
+    and heat type presets. Each zone operates independently with its own settings.
+
+    The entity:
+    - Subscribes to device state updates for synchronization
+    - Maintains local state with optimistic updates for immediate UI feedback
+    - Sends commands via BLE to the physical device
+    - Supports multiple HVAC modes (Cool, Heat, Auto, Fan Only, Dry, Off)
+    - Adapts available fan modes based on current HVAC mode and device configuration
+    - Provides heat type preset selection when in heating mode (furnace, heat pump, etc.)
+    - Handles temperature setpoint control for single-mode and dual-setpoint (auto) scenarios
+
+    Attributes:
+        _data: The shared MicroAirEasyTouchBluetoothDeviceData instance for device communication.
+        _mac_address: The Bluetooth MAC address of the device.
+        _zone: The zone number (0-based) this entity represents.
+        _state: Dict containing the current zone state (temperature, setpoints, mode, etc.).
+    """
     _attr_has_entity_name = True
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
@@ -91,6 +136,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     )
     _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     _attr_should_poll = False
+    # @todo consider using SPL values to set the gauge range 
     _attr_min_temp = 50
     _attr_max_temp = 85
     _attr_target_temperature_step = 1.0
@@ -149,17 +195,63 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         except (AttributeError, KeyError, TypeError) as e:
             _LOGGER.debug("Error updating zone %s state: %s", self._zone, str(e))
 
+    def _get_speed_name_map(self, max_speed: int, available_speeds: list[int]) -> dict[int, str]:
+        """Build dynamic speed-to-name mapping based on max_speed capability and available speeds.
+        
+        Only includes mappings for speeds that are actually available in available_speeds.
+        
+        Args:
+            max_speed: Maximum manual speed supported (1, 2, 3+)
+            available_speeds: List of numeric speeds actually available for this zone/mode
+        
+        Returns dict mapping numeric speed values to HA standard fan mode names:
+        - max_speed=1: {1: 'high'} (single speed is always 'high')
+        - max_speed=2: {1: 'low', 2: 'high'}
+        - max_speed=3+: {1: 'low', 2: 'medium', 3+: 'high'}
+        - Includes 0: 'off', 64: 'auto', 128: 'auto' only if present in available_speeds
+        """
+        speed_map = {}
+        
+        # Only include speeds that are actually available
+        for speed in available_speeds:
+            if speed == 0:
+                speed_map[0] = FAN_OFF
+            elif speed == 64 or speed == 128:
+                speed_map[speed] = FAN_AUTO
+            elif speed >= 1:
+                # Map manual speeds based on max_speed capability
+                if max_speed == 1:
+                    # Single speed systems: any manual speed is 'high'
+                    speed_map[speed] = FAN_HIGH
+                elif max_speed == 2:
+                    # Two speed systems: 1=low, 2+=high
+                    if speed == 1:
+                        speed_map[speed] = FAN_LOW
+                    else:
+                        speed_map[speed] = FAN_HIGH
+                elif max_speed >= 3:
+                    # Three+ speed systems: 1=low, 2=medium, 3+=high
+                    if speed == 1:
+                        speed_map[speed] = FAN_LOW
+                    elif speed == 2:
+                        speed_map[speed] = FAN_MEDIUM
+                    else:
+                        speed_map[speed] = FAN_HIGH
+        
+        return speed_map
+
     @property
     def icon(self) -> str:
         """Return the entity icon."""
         # Prefer preset-specific icons when in heat mode with a selected preset
+        # Note: these do not effect the UI but are available in the entity state
+        # This is a climate framework limitation
         try:
             if self.hvac_mode == HVACMode.HEAT:
                 preset = self.preset_mode
                 if preset and preset in PRESET_MODE_ICONS:
                     return PRESET_MODE_ICONS.get(self.preset_mode, "mdi:heat-wave")
         except (AttributeError, KeyError, TypeError):
-            # Fallback to hvac icon if preset retrieval fails
             pass
         return HVAC_MODE_ICONS.get(self.hvac_mode, "mdi:thermostat")
 
@@ -183,7 +275,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def entity_picture(self) -> str | None:
         """Return the entity icon."""
-        # Called by Home Assistant's climate entity framework
         if self.fan_mode:
             return f"mdi:{FAN_MODE_ICONS.get(self.fan_mode, 'fan')}"
         return None
@@ -265,8 +356,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def fan_mode(self) -> str | None:
         """Return the current fan mode as a standard Home Assistant name."""
-        # Get the appropriate fan mode number based on current HVAC mode
-        # Called by Home Assistant's climate entity framework
+        # Get the appropriate fan mode based on current HVAC mode
         if self.hvac_mode == HVACMode.FAN_ONLY:
             fan_mode_num = self._state.get("fan_mode_num", 0)
         elif self.hvac_mode == HVACMode.COOL:
@@ -276,7 +366,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         elif self.hvac_mode == HVACMode.AUTO:
             fan_mode_num = self._state.get("auto_fan_mode_num", 128)
         else:
-            return "auto"
+            return FAN_AUTO
 
         # Use direct mapping from numeric value to Home Assistant fan mode
         current_mode_num = self._state.get("mode_num", 1)
@@ -284,14 +374,13 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             self._zone, current_mode_num
         )
 
-        # Special handling for autonomous furnace (speeds [0, 128] only)
+        # Special handling for auto furnace (speeds [0, 128] only)
         if set(available_speeds) == {0, 128}:
-            # This is an autonomous furnace - ignore reported fan_mode_num and use simplified logic
+            # This is an auto furnace - ignore reported fan_mode_num and use simplified logic
             if fan_mode_num == 0:
-                return "off"
+                return FAN_OFF
             else:
-                # Any non-zero value represents autonomous operation
-                return "auto"  # Represents autonomous operation
+                return FAN_AUTO
 
         # Normal mapping for other modes
         for ha_mode, numeric_values in FAN_MODE_REVERSE_MAP.items():
@@ -311,7 +400,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             self._zone,
             fan_mode_num,
         )
-        return "auto"
+        return FAN_AUTO
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
@@ -350,14 +439,13 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def fan_modes(self) -> list[str]:
         """Return available fan modes based on zone configuration and current HVAC mode."""
-        # Called by Home Assistant's climate entity framework
         # Get current device mode number
         current_mode_num = self._state.get("mode_num")
         if current_mode_num is None:
             # Fallback to default modes if no state available
             if self.hvac_mode == HVACMode.FAN_ONLY:
-                return ["off", "low", "high"]
-            return ["off", "low", "high", "auto"]
+                return [FAN_OFF, FAN_LOW, FAN_HIGH]
+            return [FAN_OFF, FAN_LOW, FAN_HIGH, FAN_AUTO]
 
         # Get available fan speeds for current mode from configuration
         available_speeds = self._data.get_available_fan_speeds(
@@ -367,25 +455,19 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         if not available_speeds:
             # Fallback if no config available
             if self.hvac_mode == HVACMode.FAN_ONLY:
-                return ["off", "low", "high"]
-            return ["off", "low", "high", "auto"]
+                return [FAN_OFF, FAN_LOW, FAN_HIGH]
+            return [FAN_OFF, FAN_LOW, FAN_HIGH, FAN_AUTO]
 
-        # Map device fan speeds to HA fan mode names
+        # Get max_speed from capabilities to build dynamic mapping
+        capabilities = self._data.get_fan_capabilities(self._zone, current_mode_num)
+        max_speed = capabilities.get("max_speed", 2)
+        speed_map = self._get_speed_name_map(max_speed, available_speeds)
+
+        # Map device fan speeds to HA fan mode names using dynamic mapping
         fan_mode_names = []
-
         for speed in available_speeds:
-            if speed == 0:
-                fan_mode_names.append("off")
-            elif speed == 1:
-                fan_mode_names.append("low")
-            elif speed == 2:
-                fan_mode_names.append("high")
-            elif speed == 3:
-                fan_mode_names.append("medium")  # For 3-speed systems not sure 2<=>3
-            elif speed == 64:
-                fan_mode_names.append("auto")  # Manual auto
-            elif speed == 128:
-                fan_mode_names.append("auto")  # Full auto (don't duplicate)
+            if speed in speed_map:
+                fan_mode_names.append(speed_map[speed])
 
         # Remove duplicates while preserving order
         unique_modes = []
@@ -394,12 +476,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 unique_modes.append(mode)
 
         # Allow empty fan_mode values gracefully (HA UI can send blank during mode transitions)
-        # This has a side effect of adding a blank mode to the list.
         if "" not in unique_modes:
             unique_modes.append("")
 
-        return unique_modes if unique_modes else ["auto"]
-
+        return unique_modes if unique_modes else [FAN_AUTO]
     @property
     def preset_modes(self) -> list[str]:
         """Return available heat type presets based on zone configuration."""
@@ -752,19 +832,38 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             available_speeds,
         )
 
+        # Get capabilities and build dynamic speed mapping
+        capabilities = self._data.get_fan_capabilities(self._zone, current_mode_num)
+        max_speed = capabilities.get("max_speed", 2)
+        speed_map = self._get_speed_name_map(max_speed, available_speeds)
+        
+        # Build reverse map (name -> speeds)
+        name_to_speeds = {}
+        for speed, name in speed_map.items():
+            if name not in name_to_speeds:
+                name_to_speeds[name] = []
+            name_to_speeds[name].append(speed)
+
         # Map fan mode name to speed value
-        if fan_mode == "off":
+        if fan_mode == FAN_OFF:
             fan_value = 0
-        elif fan_mode in ["low", "high"]:
-            # For low/high, we need to check if we're in cool mode and preserve manual vs cycled setting
-            if self.hvac_mode == HVACMode.COOL:
+        elif fan_mode == FAN_AUTO:
+            # Use manual auto (64) if available, fallback to full auto (128)
+            fan_value = 64 if 64 in available_speeds else 128
+        elif fan_mode in (FAN_LOW, FAN_MEDIUM, FAN_HIGH):
+            # Get candidate speeds for this mode name from dynamic mapping
+            candidate_speeds = name_to_speeds.get(fan_mode, [])
+            
+            # For cool mode with low/high, preserve manual vs cycled setting
+            if self.hvac_mode == HVACMode.COOL and fan_mode in (FAN_LOW, FAN_HIGH):
                 current_fan_num = self._state.get("cool_fan_mode_num", 1)
-                if fan_mode == "low":
-                    # If current is cycled low (65), keep cycled; otherwise use manual low (1)
+                # Check if currently using cycled variant (65=cycled low, 66=cycled high)
+                if fan_mode == FAN_LOW:
                     fan_value = 65 if current_fan_num == 65 else 1
-                else:  # fan_mode == "high"
-                    # If current is cycled high (66), keep cycled; otherwise use manual high (2)
-                    fan_value = 66 if current_fan_num == 66 else 2
+                elif fan_mode == FAN_HIGH:
+                    # For high, use the appropriate speed based on max_speed
+                    base_high_speed = max_speed if max_speed <= 2 else 2
+                    fan_value = 66 if current_fan_num == 66 else base_high_speed
                 _LOGGER.debug(
                     "Zone %d cool mode: current_fan_num=%d, fan_mode='%s', using fan_value=%d",
                     self._zone,
@@ -773,18 +872,20 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                     fan_value,
                 )
             else:
-                # For non-cool modes, use standard mapping
-                fan_value = 1 if fan_mode == "low" else 2
-        elif fan_mode == "medium":
-            fan_value = 3
-        elif fan_mode == "auto":
-            # Use full auto (128) if available, otherwise manual auto (64)
-            if 128 in available_speeds:
-                fan_value = 128
-            elif 64 in available_speeds:
-                fan_value = 64
-            else:
-                fan_value = 128  # Fallback
+                # Use first available candidate speed that's actually available
+                fan_value = None
+                for speed in candidate_speeds:
+                    if speed in available_speeds:
+                        fan_value = speed
+                        break
+                if fan_value is None:
+                    _LOGGER.warning(
+                        "No available speed for fan mode %s (candidates: %s, available: %s)",
+                        fan_mode,
+                        candidate_speeds,
+                        available_speeds,
+                    )
+                    return
         else:
             _LOGGER.warning("Unknown fan mode: %s", fan_mode)
             return
@@ -882,10 +983,10 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     def extra_state_attributes(self) -> dict:
         """Return additional state attributes."""
         attrs: dict = {}
-        # Expose raw fields useful for debugging and automation
+        # Expose some raw fields that maybe useful for debug/automation
         for k in (
             "mode_num",
-            "current_mode_num",
+            "active_state_num",
             "heat_source",
             "on",
             "off",
@@ -901,9 +1002,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 "available_modes": self._data.get_available_modes(self._zone),
                 "mav_bitmask": zone_config.get("MAV", 0),
                 "setpoint_limits": zone_config.get("SPL", []),
-                "fan_config_sample": zone_config.get("FA", [])[
-                    :4
-                ],  # Just show first 4 for brevity
+                "fan_config_sample": zone_config.get("FA", [])[:6],  
             }
 
         return attrs
