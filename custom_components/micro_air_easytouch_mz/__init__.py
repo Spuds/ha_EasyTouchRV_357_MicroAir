@@ -1,21 +1,19 @@
 """MicroAirEasyTouch Integration"""
 
 from __future__ import annotations
-
 import logging
 from typing import Final
 
-from homeassistant.components.bluetooth import (
-    BluetoothServiceInfoBleak,
-)
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigEntry
+
 from homeassistant.const import (
     Platform,
     CONF_PASSWORD,
     CONF_USERNAME,
     EVENT_HOMEASSISTANT_STARTED,
 )
-from homeassistant.core import HomeAssistant, callback
 
 from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 from .const import DOMAIN
@@ -26,7 +24,19 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up MicroAirEasyTouch from a config entry."""
+    """Set up MicroAirEasyTouch from a config entry.
+
+    This function is called to set up the MicroAirEasyTouch device from a configuration entry 
+    in Home Assistant. It initializes the device data, sets up the Bluetooth 
+    connection, and fetches any detected zone configurations.
+
+    Args:
+        hass (HomeAssistant): The Home Assistant instance.
+        entry (ConfigEntry): The configuration entry containing device information.
+
+    Returns:
+        bool: True if the setup was successful, False otherwise.
+    """
     address = entry.unique_id
     assert address is not None
     password = entry.data.get(CONF_PASSWORD)
@@ -36,19 +46,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store the device address for persistent connection attempts
     data.set_device_address(address)
 
-    # Clear any cached BLE device so we reacquire a new handle after reload
-    try:
-        data.set_ble_device(None)
-    except Exception:
-        pass
 
-    # Re-fetch zone configurations if zones were detected during setup
+    # Re-fetch zone configurations if they were detected during setup
     detected_zones = entry.data.get("detected_zones", [])
-
     if detected_zones:
-        _LOGGER.debug(
-            "Re-fetching zone configurations for %d zones", len(detected_zones)
-        )
         try:
             from homeassistant.components.bluetooth import async_ble_device_from_address
 
@@ -63,7 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.warning(
                     "Cannot re-fetch zone configs - BLE device not available"
                 )
-        except Exception as e:
+        except (OSError, TimeoutError) as e:
             _LOGGER.warning("Failed to re-fetch zone configurations: %s", str(e))
     else:
         _LOGGER.warning(
@@ -73,8 +74,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"data": data}
 
     @callback
-    async def _refresh_zone_configs_startup(event) -> None:
-        """One-time config fetch at HA start to avoid missing MAV/FA/SPL."""
+    async def _refresh_zone_configs_startup(event: Event | None = None) -> None:
+        """One-time config fetch at HA start to avoid missing MAV/FA/SPL data.
+
+        This function is called once at Home Assistant startup to fetch the 
+        zone configurations. It ensures that the device has the latest 
+        configuration data and avoids missing any important MAV/FA/SPL data.
+        """
         device_state = data.async_get_device_data()
         existing_configs = device_state.get("zone_configs", {}) if device_state else {}
 
@@ -86,7 +92,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         ble_device = async_ble_device_from_address(hass, address)
         if not ble_device:
-            _LOGGER.debug("Startup zone config fetch skipped; BLE device unavailable")
             return
 
         zones = (
@@ -95,25 +100,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or [0]
         )
 
-        _LOGGER.debug(
-            "Startup zone config fetch for %s (zones=%s)",
-            address,
-            zones,
-        )
+        _LOGGER.debug("Startup zone config fetch for %s (zones=%s)", address, zones)
         try:
             await data._refetch_zone_configurations(hass, ble_device, zones)
-        except Exception as err:
+        except (OSError, TimeoutError) as err:
             _LOGGER.debug("Startup zone config fetch failed: %s", err)
 
-    # Run once after HA fully starts so BLE is ready
+    # Run once after HA starts so BLE is ready
     hass.bus.async_listen_once(
         EVENT_HOMEASSISTANT_STARTED, _refresh_zone_configs_startup
     )
 
-    # Start polling by default so we can obtain full status for devices that do not advertise
+    # Start polling by default so we obtain status (microair does not advertise)
     try:
         data.start_polling(hass, startup_delay=1.0, address=address)
-    except Exception as e:
+    except (OSError, TimeoutError) as e:
         _LOGGER.debug("Failed to start polling task: %s", str(e))
 
     @callback
@@ -129,18 +130,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register services
     await async_register_services(hass)
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry.
+
+    This function is called to unload a configuration entry from Home Assistant.
+    It ensures that all associated platforms are unloaded and performs any 
+    necessary cleanup for the device data.
+
+    Args:
+        hass (HomeAssistant): The Home Assistant instance.
+        entry (ConfigEntry): The configuration entry to unload.
+
+    Returns:
+        bool: True if the unload was successful, False otherwise.
+    """
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        # Clean up device data
         device_data = hass.data[DOMAIN].pop(entry.entry_id, {}).get("data")
         if device_data:
             await device_data.async_shutdown()
-        # Unregister services
         await async_unregister_services(hass)
     return unload_ok
