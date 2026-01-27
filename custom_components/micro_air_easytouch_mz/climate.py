@@ -45,11 +45,6 @@ async def async_setup_entry(
     # Try to get zones from config entry first (detected during setup)
     available_zones = config_entry.data.get("detected_zones", None)
     if available_zones:
-        _LOGGER.info(
-            "Using zones from config entry for device %s: %s",
-            mac_address,
-            available_zones,
-        )
         entities = []
         for zone in available_zones:
             entity = MicroAirEasyTouchClimate(data, mac_address, zone)
@@ -57,11 +52,11 @@ async def async_setup_entry(
         async_add_entities(entities)
         return
 
-    # Fallback: Get BLE device to probe for available zones (legacy behavior)
+    # Fallback: Get BLE device to probe for available zones
     ble_device = async_ble_device_from_address(hass, mac_address)
     if not ble_device:
         _LOGGER.warning("Could not find BLE device to detect zones: %s", mac_address)
-        # Fall back to single zone if device not found
+        # Fall back to single zone 0 if device not found
         entity = MicroAirEasyTouchClimate(data, mac_address, 0)
         async_add_entities([entity])
         return
@@ -69,22 +64,18 @@ async def async_setup_entry(
     # Store the BLE device for persistent use
     data.set_ble_device(ble_device)
 
-    # Probe device for available zones (fallback only)
+    # Probe device for available zones
     try:
         available_zones = await data.get_available_zones(hass, ble_device)
-        _LOGGER.info(
-            "Fallback zone detection for device %s: %s", mac_address, available_zones
-        )
-
         entities = []
         for zone in available_zones:
             entity = MicroAirEasyTouchClimate(data, mac_address, zone)
             entities.append(entity)
 
         async_add_entities(entities)
-    except Exception as e:
+    except (TimeoutError, asyncio.TimeoutError, OSError) as e:
         _LOGGER.error("Failed to detect zones for device %s: %s", mac_address, str(e))
-        # Fall back to single zone if detection fails
+        # Fall back to single zone 0 if detection fails
         entity = MicroAirEasyTouchClimate(data, mac_address, 0)
         async_add_entities([entity])
 
@@ -99,9 +90,8 @@ class MicroAirEasyTouchClimate(ClimateEntity):
         | ClimateEntityFeature.FAN_MODE
     )
     _attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
-    # hvac_modes is now dynamic based on zone configuration
     _attr_should_poll = False
-    _attr_min_temp = 55
+    _attr_min_temp = 50
     _attr_max_temp = 85
     _attr_target_temperature_step = 1.0
 
@@ -156,7 +146,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         list(self._state.keys()) if self._state else "empty",
                     )
                     self.async_write_ha_state()
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError) as e:
             _LOGGER.debug("Error updating zone %s state: %s", self._zone, str(e))
 
     @property
@@ -168,7 +158,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 preset = self.preset_mode
                 if preset and preset in PRESET_MODE_ICONS:
                     return PRESET_MODE_ICONS.get(self.preset_mode, "mdi:heat-wave")
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             # Fallback to hvac icon if preset retrieval fails
             pass
         return HVAC_MODE_ICONS.get(self.hvac_mode, "mdi:thermostat")
@@ -182,15 +172,17 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             | ClimateEntityFeature.FAN_MODE
         )
 
-        # Only include preset mode support when in heating mode
         if self.hvac_mode == HVACMode.HEAT:
             features |= ClimateEntityFeature.PRESET_MODE
+
+        if self.hvac_mode == HVACMode.DRY:
+            features |= ClimateEntityFeature.TARGET_HUMIDITY    
 
         return features
 
     @property
     def entity_picture(self) -> str | None:
-        """Return the entity picture."""
+        """Return the entity icon."""
         # Called by Home Assistant's climate entity framework
         if self.fan_mode:
             return f"mdi:{FAN_MODE_ICONS.get(self.fan_mode, 'fan')}"
@@ -198,7 +190,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
-        # Entity is now subscribed to updates via _handle_device_update
+        # Entity is subscribed to updates via _handle_device_update
         # Initial state will come from the polling loop
         pass
 
@@ -246,7 +238,6 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def hvac_action(self) -> HVACAction | None:
         """Return the current HVAC action."""
-        # Called by Home Assistant's climate entity framework
         current_mode = self._state.get("current_mode")
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
@@ -274,7 +265,8 @@ class MicroAirEasyTouchClimate(ClimateEntity):
     @property
     def fan_mode(self) -> str | None:
         """Return the current fan mode as a standard Home Assistant name."""
-        # Get the appropriate fan mode number based on current HVAC mode - Called by Home Assistant's climate entity framework
+        # Get the appropriate fan mode number based on current HVAC mode
+        # Called by Home Assistant's climate entity framework
         if self.hvac_mode == HVACMode.FAN_ONLY:
             fan_mode_num = self._state.get("fan_mode_num", 0)
         elif self.hvac_mode == HVACMode.COOL:
@@ -495,7 +487,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 _LOGGER.debug(
                     "Heat type set to %s for zone %s", preset_mode, self._zone
                 )
-            except Exception as e:
+            except (AttributeError, KeyError, TypeError) as e:
                 _LOGGER.debug("Failed to apply optimistic heat type update: %s", str(e))
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -598,7 +590,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
                     asyncio.create_task(_check_and_rollback())
 
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     _LOGGER.debug(
                         "Failed to apply optimistic temperature update: %s", str(e)
                     )
@@ -701,7 +693,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         "HVAC mode set successfully for zone %s, immediate status update applied",
                         self._zone,
                     )
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     _LOGGER.debug(
                         "Failed to apply optimistic hvac_mode update: %s", str(e)
                     )
@@ -831,7 +823,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         "Fan-only mode set successfully for zone %s, immediate status update applied",
                         self._zone,
                     )
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     _LOGGER.debug(
                         "Failed to apply optimistic fan-only update: %s", str(e)
                     )
@@ -880,7 +872,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         "Fan mode set successfully for zone %s, immediate status update applied",
                         self._zone,
                     )
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     _LOGGER.debug("Failed to apply optimistic fan update: %s", str(e))
                 # Note: Command execution automatically reads response for immediate verification
             else:
@@ -956,5 +948,5 @@ class MicroAirEasyTouchClimate(ClimateEntity):
 
         try:
             self.async_write_ha_state()
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError) as e:
             _LOGGER.debug("Error writing HA state for zone %s: %s", self._zone, str(e))
