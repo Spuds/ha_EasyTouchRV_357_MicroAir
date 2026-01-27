@@ -23,7 +23,7 @@ from sensor_state_data.enum import StrEnum
 
 # Local imports for constants and domain-specific functionality
 from ..const import DOMAIN
-from .const import UUIDS, FAN_MODES_FULL, FAN_MODES_FAN_ONLY
+from .const import UUIDS, FAN_MODES_FAN_ONLY, HEAT_TYPE_REVERSE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -434,8 +434,9 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 # Bit 0 (1): Cycle Active - HVAC cycle currently running
                 # Bit 1 (2): Cooling - Zone is actively cooling
                 # Bit 2 (4): Heating - Zone is actively heating
-                # Bit 3 (8) & Bit 4 (16): Unknown
-                # Bit 5 (32): Auto Heat? - Auto-heat mode active
+                # Bit 3 (8): Unknown
+                # Bit 4 (16): Unknown
+                # Bit 5 (32): Auto Heat?
                 active_state_num = zone_status["active_state_num"]
                 if active_state_num & 4:  # Bit 2: Heating
                     zone_status["current_mode"] = "heat"
@@ -444,16 +445,13 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 else:
                     zone_status["current_mode"] = "off"
 
-                # Detect heat source if mode_num indicates heat variants
-                if zone_status.get("mode_num") in (4, 5):
-                    zone_status["heat_source"] = (
-                        "furnace" if zone_status["mode_num"] == 4 else "heat_pump"
-                    )
-
-                # Map fan modes based on current mode
-                current_mode = zone_status.get("mode", "off")
+                # Use heat type preset name from constant
+                mode_num = zone_status.get("mode_num")
+                if mode_num in HEAT_TYPE_REVERSE:
+                    zone_status["heat_source"] = HEAT_TYPE_REVERSE[mode_num]
 
                 # Store the raw fan mode numbers and their string representations
+                current_mode = zone_status.get("mode", "off")
                 if current_mode == "fan":
                     fan_num = info[6]
                     zone_status["fan_mode_num"] = fan_num
@@ -461,31 +459,19 @@ class MicroAirEasyTouchBluetoothDeviceData(BluetoothData):
                 elif current_mode in ("cool", "dry"):
                     fan_num = info[7]
                     zone_status["cool_fan_mode_num"] = fan_num
-                    zone_status["cool_fan_mode"] = FAN_MODES_FULL.get(
-                        fan_num, "full auto"
-                    )
                 # For heat modes, use different fan index based on specific mode    
                 elif current_mode in ("heat_on", "heat"):
                     # Furnace heat modes
                     if zone_status.get("mode_num") in (3, 4):
                         fan_num = info[11]
                         zone_status["furnace_fan_mode_num"] = fan_num
-                        zone_status["heat_fan_mode"] = FAN_MODES_FULL.get(
-                            fan_num, "full auto"
-                        )
-                    # Heat pump (5) or heat strip (7)    
-                    elif zone_status.get("mode_num") in (5, 7):
+                    # Heat pump (5), heat strip (7), electric heat (12)   
+                    elif zone_status.get("mode_num") in (5, 7, 12):
                         fan_num = info[8]
                         zone_status["heat_fan_mode_num"] = fan_num
-                        zone_status["heat_fan_mode"] = FAN_MODES_FULL.get(
-                            fan_num, "full auto"
-                        )
                 elif current_mode == "auto":
                     fan_num = info[9]
                     zone_status["auto_fan_mode_num"] = fan_num
-                    zone_status["auto_fan_mode"] = FAN_MODES_FULL.get(
-                        fan_num, "full auto"
-                    )
 
                 zone_data[zone_num] = zone_status
             except (ValueError, IndexError, KeyError) as e:
