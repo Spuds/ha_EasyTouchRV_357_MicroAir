@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
 import voluptuous as vol
 
 from homeassistant.components.bluetooth import (
@@ -14,10 +15,10 @@ from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_PASSWORD, CONF_USERNAME
 
-from .micro_air_easytouch.parser import (
-    MicroAirEasyTouchBluetoothDeviceData,
-)  # Corrected import
+from .micro_air_easytouch.parser import MicroAirEasyTouchBluetoothDeviceData
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -75,9 +76,6 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                         if available_zones:
                             # Store detected zones in the device config for later use
                             self._discovered_device._detected_zones = available_zones
-                            import logging
-
-                            _LOGGER = logging.getLogger(__name__)
                             _LOGGER.info(
                                 "Config flow detected %d zones during setup: %s",
                                 len(available_zones),
@@ -91,9 +89,6 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 return await self.async_step_bluetooth_confirm(user_input)
             except Exception as e:
-                import logging
-
-                _LOGGER = logging.getLogger(__name__)
                 _LOGGER.error(
                     "Credential validation or zone detection failed: %s", str(e)
                 )
