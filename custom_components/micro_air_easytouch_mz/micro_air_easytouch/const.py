@@ -4,9 +4,7 @@ from homeassistant.components.climate import HVACMode
 from homeassistant.components.climate.const import (
     FAN_OFF,
     FAN_LOW,
-    FAN_MEDIUM,
     FAN_HIGH,
-    FAN_AUTO,
 )
 
 UUIDS = {
@@ -45,15 +43,6 @@ FAN_MODES_FAN_ONLY = {
     FAN_OFF: 0,
     FAN_LOW: 1,  # manualL
     FAN_HIGH: 2,  # manualH
-}
-
-# Map fan modes to possible HA codes
-FAN_MODE_REVERSE_MAP = {
-    FAN_OFF: [0],
-    FAN_LOW: [1, 65], # manualL or cycleL
-    FAN_HIGH: [2, 66], # manualH or cycleH
-    FAN_MEDIUM: [3],
-    FAN_AUTO: [128, 64],
 }
 
 # Heat type preset mappings
