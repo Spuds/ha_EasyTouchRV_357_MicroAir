@@ -81,6 +81,15 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                                 len(available_zones),
                                 available_zones,
                             )
+                            
+                            # Extract and store zone configs for persistence
+                            zone_configs = self._discovered_device._device_state.get("zone_configs", {})
+                            if zone_configs:
+                                self._discovered_device._zone_configs = zone_configs
+                            else:
+                                _LOGGER.debug(
+                                    "No zone configs available after zone detection"
+                                )
                         else:
                             _LOGGER.warning(
                                 "Config flow could not detect zones; will fallback to single zone"
@@ -129,12 +138,20 @@ class MicroAirEasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 and self._discovered_device._detected_zones
             ):
                 config_data["detected_zones"] = self._discovered_device._detected_zones
-                import logging
-
-                _LOGGER = logging.getLogger(__name__)
                 _LOGGER.info(
                     "Storing detected zones in config entry: %s",
                     self._discovered_device._detected_zones,
+                )
+            
+            # Add zone configs if available
+            if (
+                hasattr(self._discovered_device, "_zone_configs")
+                and self._discovered_device._zone_configs
+            ):
+                config_data["zone_configs"] = self._discovered_device._zone_configs
+                _LOGGER.info(
+                    "Storing zone configs in config entry for zones: %s",
+                    list(self._discovered_device._zone_configs.keys()),
                 )
 
             return self.async_create_entry(title=title, data=config_data)

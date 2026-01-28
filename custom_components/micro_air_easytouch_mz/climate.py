@@ -70,6 +70,14 @@ async def async_setup_entry(
     # Try to get zones from config entry first (detected during setup)
     available_zones = config_entry.data.get("detected_zones", None)
     if available_zones:
+        # Load cached zone configs from config entry if available
+        cached_zone_configs = config_entry.data.get("zone_configs", {})
+        if cached_zone_configs:
+            # Restore cached zone configs to the parser
+            for zone, config in cached_zone_configs.items():
+                zone_num = int(zone) if isinstance(zone, str) else zone
+                data._device_state.setdefault("zone_configs", {})[zone_num] = config
+        
         entities = []
         for zone in available_zones:
             entity = MicroAirEasyTouchClimate(data, mac_address, zone)
@@ -92,6 +100,19 @@ async def async_setup_entry(
     # Probe device for available zones
     try:
         available_zones = await data.get_available_zones(hass, ble_device)
+        
+        # Save both zones and configs to config entry for future restarts
+        zone_configs_to_save = data._device_state.get("zone_configs", {})
+        if zone_configs_to_save:
+            hass.config_entries.async_update_entry(
+                config_entry,
+                data={
+                    **config_entry.data,
+                    "detected_zones": available_zones,
+                    "zone_configs": zone_configs_to_save,
+                },
+            )
+        
         entities = []
         for zone in available_zones:
             entity = MicroAirEasyTouchClimate(data, mac_address, zone)
@@ -219,7 +240,7 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                 continue
 
             # Full auto mode
-            if speed == 128:
+            if speed in (64, 128):
                 speed_map[speed] = FAN_AUTO
                 continue
 
