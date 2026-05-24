@@ -19,6 +19,9 @@ from homeassistant.components.climate.const import (
     FAN_MEDIUM,
     FAN_HIGH,
     FAN_AUTO,
+    ATTR_HVAC_MODE,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
@@ -593,15 +596,92 @@ class MicroAirEasyTouchClimate(ClimateEntity):
             return
 
         changes = {"zone": self._zone, "power": 1}
+
+        target_mode = self.hvac_mode
+        if ATTR_HVAC_MODE in kwargs:
+            hvac_mode = kwargs.get(ATTR_HVAC_MODE)
+            if hvac_mode not in self.hvac_modes:
+                _LOGGER.warning(
+                    "HVAC mode %s not available for zone %s (available: %s)",
+                    hvac_mode,
+                    self._zone,
+                    self.hvac_modes,
+                )
+                return
+            target_mode = hvac_mode
+            mode = HA_MODE_TO_EASY_MODE.get(hvac_mode)
+            if mode is not None:
+                # Double-check that the device mode is actually available
+                if not self._data.is_mode_available(self._zone, mode):
+                    # For HEAT mode, try to find the first available heat mode
+                    if hvac_mode == HVACMode.HEAT:
+                        alternative_mode = None
+                        # Iterate through heat modes in order
+                        for heat_mode_num in POSSIBLE_HEAT_MODES:
+                            if self._data.is_mode_available(self._zone, heat_mode_num):
+                                alternative_mode = heat_mode_num
+                                break
+
+                        if alternative_mode is None:
+                            _LOGGER.warning(
+                                "Device mode %d not available for zone %s, and no alternative auto modes available",
+                                mode,
+                                self._zone,
+                            )
+                            return
+
+                        _LOGGER.debug(
+                            "Heat mode %d selected for for zone %s (input mode: %d)",
+                            alternative_mode,
+                            self._zone,
+                            mode,
+                        )
+
+                        mode = alternative_mode
+                    # For AUTO mode, try to find the first available auto mode
+                    elif hvac_mode == HVACMode.AUTO:
+                        alternative_mode = None
+                        # Iterate through auto modes in order
+                        for auto_mode_num in POSSIBLE_AUTO_MODES:
+                            if self._data.is_mode_available(self._zone, auto_mode_num):
+                                alternative_mode = auto_mode_num
+                                break
+
+                        if alternative_mode is None:
+                            _LOGGER.warning(
+                                "Device mode %d not available for zone %s, and no alternative auto modes available",
+                                mode,
+                                self._zone,
+                            )
+                            return
+
+                        _LOGGER.debug(
+                            "Auto mode %d selected for for zone %s (input mode: %d)",
+                            alternative_mode,
+                            self._zone,
+                            mode,
+                        )
+
+                        mode = alternative_mode
+                    else:
+                        _LOGGER.warning(
+                            "Device mode %d not available for zone %s (MAV check failed)",
+                            mode,
+                            self._zone,
+                        )
+                        return
+                # Note: For zone-specific OFF we must send power=1 with mode=0; power=0 is a system-wide OFF (all zones).
+                changes["mode"] = mode
+
         if ATTR_TEMPERATURE in kwargs:
             temp = int(kwargs[ATTR_TEMPERATURE])
-            if self.hvac_mode == HVACMode.COOL:
+            if target_mode == HVACMode.COOL:
                 changes["cool_sp"] = temp
-            elif self.hvac_mode == HVACMode.HEAT:
+            elif target_mode == HVACMode.HEAT:
                 changes["heat_sp"] = temp
-            elif self.hvac_mode == HVACMode.DRY:
+            elif target_mode == HVACMode.DRY:
                 changes["dry_sp"] = temp
-        elif "target_temp_high" in kwargs and "target_temp_low" in kwargs:
+        elif ATTR_TARGET_TEMP_HIGH in kwargs and ATTR_TARGET_TEMP_LOW in kwargs:
             changes["autoCool_sp"] = int(kwargs["target_temp_high"])
             changes["autoHeat_sp"] = int(kwargs["target_temp_low"])
 
@@ -626,6 +706,13 @@ class MicroAirEasyTouchClimate(ClimateEntity):
                         self._state["autoCool_sp"] = changes["autoCool_sp"]
                     if "autoHeat_sp" in changes:
                         self._state["autoHeat_sp"] = changes["autoHeat_sp"]
+                    if "mode" in changes:
+                        self._state["mode_num"] = mode
+                        if target_mode == HVACMode.OFF:
+                            self._state["off"] = True
+                        else:
+                            self._state["on"] = True
+
                     self.async_write_ha_state()
                     _LOGGER.debug(
                         "Temperature set successfully for zone %s, immediate status update applied",
